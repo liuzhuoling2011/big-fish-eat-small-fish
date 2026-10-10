@@ -41,3 +41,11 @@ Matched / improved:
 - Fish: prefer canvas vector redraw (`assets/fish/svg/*.svg` references) so large sizes stay sharp.
 - Pause/resume control fused left of TIME clock (click / P / Esc).
 - Horizontal wrap = full SWF width mapped to gold-frame inner water (`FRAME_PAD_*` / `PLAY`).
+
+## Phase 5 — layout + faithful SVG fish (2026-10-10)
+
+- Gold-frame pads = `gold-frame.webp` hole (73/1100, 73/790); PLAY/clip/water aligned.
+- Seabed: dropped `strip-play.webp` nested black mini-frame; vector props flush to PLAY bottom.
+- TIME: cover baked blurry label; crisp canvas "TIME"; LCD well fills clock window fractions.
+- Game over / win: content clipped to inner panel; score strip + button inset with correct pads.
+- Fish: vtracer SVG of original SWF sprites → `assets/fish/svg/` + `svg-raster/*.webp`; draw path prefers these over generic cartoons.

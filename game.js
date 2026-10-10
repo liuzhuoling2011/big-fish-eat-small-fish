@@ -22,9 +22,9 @@
 
   // Gold frame — thicker candy border; lives in left outer margin
   const FX = 58, FY = 48, FW = 550, FH = 410;
-  // Match SWF shape 337 bevel (~22px on 422×303) so playfield = visible water
-  const FRAME_PAD_X = FW * (22 / 422);
-  const FRAME_PAD_Y = FH * (22 / 303);
+  // Pads match assets/ui/gold-frame.webp hole (73/1100 × 73/790 @2×)
+  const FRAME_PAD_X = FW * (73 / 1100);
+  const FRAME_PAD_Y = FH * (73 / 790);
   const BORDER = FRAME_PAD_X; // horizontal pad; prefer FRAME_PAD_* for clips
   const PLAY = {
     x: FX + FRAME_PAD_X,
@@ -191,7 +191,7 @@
   fitStage();
 
   // ─── Original SWF assets (WebP + phased load for slow nets) ───
-  const ASSET_VER = "v15";
+  const ASSET_VER = "v21";
   const ASSET = {
     ready: false,       // title-critical ready
     playReady: false,   // enough to start a round
@@ -200,7 +200,8 @@
     loadLabel: "加载中…",
     npc: [],
     npcStill: [],
-    player: { swim: [], chomp: [], hit: [], idle: null, chompStill: null, hurt: null },
+    npcSvg: [],
+    player: { swim: [], chomp: [], hit: [], idle: null, chompStill: null, hurt: null, svg: null },
     sfx: {},
     sfxBuf: {},
     ui: {},
@@ -363,17 +364,26 @@
     await loadDigitAtlases();
 
     setProgress(0.5, "加载小鱼…");
-    // Still frames = typeN/1 (deduped); animation frames deferred
-    const stills = await mapLimit([1,2,3,4,5,6,7,8], 4, (t) =>
+    // Prefer faithful SVG traces (vtracer of original SWF sprites) — sharp at any size
+    const svgStills = await mapLimit([1,2,3,4,5,6,7,8], 4, (t) =>
+      loadImage(`assets/fish/svg-raster/type${t}.webp`));
+    const bmpStills = await mapLimit([1,2,3,4,5,6,7,8], 4, (t) =>
       loadImage(`assets/fish/npc/type${t}/1.webp`));
-    ASSET.npcStill = stills;
-    ASSET.npc = stills.map((im) => (im ? [im] : []));
+    ASSET.npcStill = svgStills.map((im, i) => im || bmpStills[i]);
+    ASSET.npcSvg = svgStills;
+    ASSET.npc = ASSET.npcStill.map((im) => (im ? [im] : []));
 
     setProgress(0.62, "加载玩家…");
+    const playerSvg = await loadImage("assets/fish/svg-raster/player.webp");
     const swim = await mapLimit([1,2,3,4,5,6], 4, (i) =>
       loadImage(`assets/fish/player/swim/${String(i).padStart(2, "0")}.webp`));
     ASSET.player.swim = swim.filter(Boolean);
-    ASSET.player.idle = ASSET.player.swim[0] || null;
+    ASSET.player.svg = playerSvg;
+    ASSET.player.idle = playerSvg || ASSET.player.swim[0] || null;
+    // Life icon from traced player art
+    if (!ASSET.ui.lifeFish) {
+      ASSET.ui.lifeFish = await loadImage("assets/ui/life-fish.webp");
+    }
 
     for (const [k, url] of Object.entries(SFX_CORE)) {
       ASSET.sfx[k] = loadAudio(url);
@@ -441,13 +451,29 @@
 
   async function loadAssets() {
     mode = "loading";
+    const bootHash = location.hash || "";
     try {
       await loadCritical();
-      mode = "title";
       _playPackPromise = loadPlayPack().then(() => {
         _deferPromise = loadDeferred().catch(() => {});
       });
       await _playPackPromise;
+      if (bootHash === "#over") {
+        score = 12345; lives = 0;
+        deathFish = { x: 560, y: 220, size: 18 };
+        mode = "over";
+      } else if (bootHash === "#win") {
+        score = 105756; lives = 3;
+        deathFish = { x: 560, y: 220, size: 80 };
+        mode = "win";
+      } else if (bootHash === "#help") {
+        mode = "help";
+      } else if (bootHash === "#play") {
+        // startGame() may already be in flight from hash boot
+        if (mode === "loading" || mode === "title") beginRound();
+      } else {
+        mode = "title";
+      }
     } catch (err) {
       console.warn("asset load", err);
       ASSET.ready = true;
@@ -703,14 +729,11 @@
 
   // Pause control fused beside TIME clock (top-right)
   function pauseBtnRect() {
-    const clockW = 95, clockH = 99;
-    const cx = FX + FW - 4;
-    const cy = FY + 8;
-    const x = cx - clockW * 0.55;
-    const y = cy - clockH * 0.35;
-    // Sit just left of clock, mid height
+    // Sit just left of vector clock body (ox = FX+FW-12, oy = FY+18, r=36)
+    const ox = FX + FW - 12;
+    const oy = FY + 18;
     const bw = 34, bh = 34;
-    return { x: x - bw - 6, y: y + clockH * 0.38, w: bw, h: bh };
+    return { x: ox - 36 - bw - 8, y: oy - bh / 2, w: bw, h: bh };
   }
 
   function hitPauseBtn(p) {
@@ -930,8 +953,8 @@
     if (gf) {
       // Water playfield under frame
       ctx.save();
-      roundRect(FX + FRAME_PAD_X, FY + FRAME_PAD_Y, FW - FRAME_PAD_X * 2, FH - FRAME_PAD_Y * 2, 8);
-      const wg = ctx.createLinearGradient(0, FY, 0, FY + FH);
+      roundRect(PLAY.x, PLAY.y, PLAY.w, PLAY.h, 8);
+      const wg = ctx.createLinearGradient(0, PLAY.y, 0, PLAY.y + PLAY.h);
       wg.addColorStop(0, "#5CC3FF");
       wg.addColorStop(0.45, "#40AAFF");
       wg.addColorStop(1, "#2A88DD");
@@ -964,23 +987,18 @@
     ctx.restore();
   }
 
-  // ─── Seabed + props (original SWF sprites / strip) ────────
+  // ─── Seabed + props (vector props flush to gold-frame water; no nested strip frame) ────────
   function drawSeabed(clip) {
     ctx.save();
     if (clip) {
-      roundRect(FX + FRAME_PAD_X, FY + FRAME_PAD_Y, FW - FRAME_PAD_X * 2, FH - FRAME_PAD_Y * 2, 10);
+      roundRect(PLAY.x, PLAY.y, PLAY.w, PLAY.h, 10);
       ctx.clip();
     }
-    const left = FX + FRAME_PAD_X;
-    const right = FX + FW - FRAME_PAD_X;
-    const baseY = FY + FH - FRAME_PAD_Y - 2;
-    const strip = ASSET.seabed.stripPlay || ASSET.seabed.stripTitle;
-    if (strip) {
-      const sh = Math.min(strip.height * ((right - left) / strip.width), FH * 0.28);
-      drawAsset(strip, left, baseY - sh + 6, right - left, sh);
-      ctx.restore();
-      return;
-    }
+    const left = PLAY.x;
+    const right = PLAY.x + PLAY.w;
+    const baseY = PLAY.y + PLAY.h - 2;
+    // Intentionally skip strip-play.webp — it baked a nested black/gold mini-frame
+    // that floated as a misaligned "half-frame" inside the playfield.
     // Fallback vector seabed
     ctx.beginPath();
     ctx.moveTo(left, baseY + 6);
@@ -1453,53 +1471,97 @@
   }
 
 
-  // ─── TIME alarm clock (bitmap 7-seg digits from SWF) ─────
+  // ─── TIME alarm clock (vector chrome — sharp on hi-DPI) ─────
   function drawTimeClock() {
-    const img = ASSET.ui.clock;
     const cx = FX + FW - 4;
     const cy = FY + 8;
     const total = Math.max(0, timeSec);
     const hh = Math.floor(total / 3600);
-    const m = Math.floor((total % 3600) / 60);
-    const s = Math.floor(total % 60);
-    const tstr = `${hh}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+    const mm = Math.floor((total % 3600) / 60);
+    const ss = Math.floor(total % 60);
+    const tstr = `${hh}:${String(mm).padStart(2, "0")}:${String(ss).padStart(2, "0")}`;
 
-    if (img) {
-      const w = 95, h = 99;
-      const x = cx - w * 0.55, y = cy - h * 0.35;
-      drawAsset(img, x, y, w, h);
-      const lcdW = w * 0.62, lcdH = h * 0.18;
-      const lcdX = x + w * 0.15, lcdY = y + h * 0.46;
-      drawLcdWell(lcdX, lcdY, lcdW, lcdH, 3);
-      const digW = 9.5, digH = 14, gap = 1.2;
-      const tw = measureSevenSeg(tstr, digW, gap);
-      const startX = lcdX + (lcdW - tw) / 2;
-      drawSevenSegString(tstr, startX, lcdY + (lcdH - digH) / 2, digW, digH, gap, "#F0E24A", "rgba(240,226,74,0.0)");
-    } else {
-      ctx.save();
+    const r = 36;
+    const ox = cx - 8, oy = cy + 10;
+    ctx.save();
+    // feet
+    ctx.fillStyle = "#C0C4CC";
+    ctx.strokeStyle = "#3D2200";
+    ctx.lineWidth = 2;
+    for (const dx of [-14, 14]) {
       ctx.beginPath();
-      ctx.arc(cx, cy + 14, 32, 0, Math.PI * 2);
-      ctx.fillStyle = "#FFD01F";
-      ctx.fill();
-      ctx.strokeStyle = "#3D2200";
-      ctx.lineWidth = 3;
-      ctx.stroke();
-      ctx.fillStyle = "#fff";
-      ctx.font = "bold 9px Arial, sans-serif";
-      ctx.textAlign = "center";
-      ctx.fillText("TIME", cx, cy + 2);
-      drawLcdWell(cx - 22, cy + 8, 44, 16, 2);
-      drawSevenSegString(tstr, cx - 20, cy + 9, 8, 12, 1, "#F0E24A", "rgba(240,226,74,0.0)");
-      ctx.restore();
+      ctx.moveTo(ox + dx - 5, oy + r - 2);
+      ctx.lineTo(ox + dx - 2, oy + r + 10);
+      ctx.lineTo(ox + dx + 2, oy + r + 10);
+      ctx.lineTo(ox + dx + 5, oy + r - 2);
+      ctx.closePath();
+      ctx.fill(); ctx.stroke();
     }
+    // bell
+    ctx.beginPath();
+    ctx.arc(ox + 10, oy - r + 4, 9, 0, Math.PI * 2);
+    const bell = ctx.createLinearGradient(ox, oy - r - 6, ox, oy - r + 12);
+    bell.addColorStop(0, "#FFE456");
+    bell.addColorStop(1, "#E0A000");
+    ctx.fillStyle = bell;
+    ctx.fill();
+    ctx.strokeStyle = "#3D2200";
+    ctx.lineWidth = 2.5;
+    ctx.stroke();
+    // hammer
+    ctx.strokeStyle = "#8A9098";
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.moveTo(ox + 16, oy - r + 2);
+    ctx.quadraticCurveTo(ox + 34, oy - r - 10, ox + 30, oy - r + 8);
+    ctx.stroke();
+    ctx.fillStyle = "#A0A6AE";
+    ctx.beginPath();
+    ctx.arc(ox + 30, oy - r + 8, 4, 0, Math.PI * 2);
+    ctx.fill();
+    // body
+    ctx.beginPath();
+    ctx.arc(ox, oy, r, 0, Math.PI * 2);
+    const body = ctx.createLinearGradient(ox - r, oy - r, ox + r, oy + r);
+    body.addColorStop(0, "#FFE456");
+    body.addColorStop(0.45, "#FFD01F");
+    body.addColorStop(1, "#E8A800");
+    ctx.fillStyle = body;
+    ctx.fill();
+    ctx.lineWidth = 3.5;
+    ctx.strokeStyle = "#3D2200";
+    ctx.stroke();
+    // face disk
+    ctx.beginPath();
+    ctx.arc(ox, oy, r * 0.72, 0, Math.PI * 2);
+    ctx.fillStyle = "#F3CA2A";
+    ctx.fill();
+    // TIME label
+    ctx.fillStyle = "#FFFFFF";
+    ctx.font = "bold 11px Arial Black, Arial, sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText("TIME", ox, oy - r * 0.38);
+    // LCD well fills face window
+    const lcdW = r * 1.15, lcdH = r * 0.48;
+    const lcdX = ox - lcdW / 2, lcdY = oy - lcdH * 0.15;
+    drawLcdWell(lcdX, lcdY, lcdW, lcdH, 4);
+    const digW = 9.5, digH = 15, gap = 1.2;
+    const tw = measureSevenSeg(tstr, digW, gap);
+    drawSevenSegString(tstr, lcdX + (lcdW - tw) / 2, lcdY + (lcdH - digH) / 2, digW, digH, gap, "#F5E84A", "rgba(245,232,74,0.0)");
+    ctx.restore();
     drawPauseBtn();
   }
-
 
   function drawLives() {
     for (let i = 0; i < lives; i++) {
       const lx = 28, ly = 100 + i * 50;
-      drawVectorFish(lx, ly, 14, 1, "player", false, i * 0.7, 1);
+      const img = ASSET.ui.lifeFish || ASSET.player.svg || ASSET.player.idle;
+      if (img) {
+        drawFishImage(img, lx, ly, 14, 1, false, i * 0.7, 1);
+      } else {
+        drawVectorFish(lx, ly, 14, 1, "player", false, i * 0.7, 1);
+      }
     }
   }
 
@@ -1676,31 +1738,34 @@
   function drawFishSprite(x, y, size, facing, kind, dead, wobble, opts) {
     opts = opts || {};
     const alpha = opts.alpha;
-    // Prefer crisp vector fish so large sizes stay sharp (user request)
-    const useVector = opts.forceBitmap ? false : true;
-    if (useVector) {
-      const k = (kind === "player" || opts.player) ? "player" : (kind || "tiny");
-      // Map artType → palette kind when available
-      let kk = k;
-      if (!opts.player && opts.artType) {
-        const map = ["tiny","pink","red","blue","green","yellow","navy","purple"];
-        kk = map[(opts.artType - 1) | 0] || k;
-        if (kk === "red") kk = "pink";
-        if (kk === "navy") kk = "blue";
-      }
-      drawVectorFish(x, y, size, facing, kk, !!dead, wobble || 0, alpha);
-      return;
-    }
+    // Faithful art: SVG-raster traces of original sprites (identical look, sharp when huge).
+    // Generic cartoon vector is fallback only.
     let img = null;
     if (kind === "player" || opts.player) {
-      img = pickPlayerFrame(!!dead, opts.chompT || 0, opts.hurtT || 0, wobble || 0);
+      // Prefer traced SVG still for clarity; use chomp/hit bitmaps during anim
+      if ((opts.chompT > 0 || opts.hurtT > 0) && !dead) {
+        img = pickPlayerFrame(!!dead, opts.chompT || 0, opts.hurtT || 0, wobble || 0);
+      } else if (dead) {
+        img = pickPlayerFrame(true, 0, 0, 0);
+      } else {
+        img = ASSET.player.svg || pickPlayerFrame(false, 0, 0, wobble || 0);
+      }
     } else {
       let art = opts.artType || KIND_TO_ART[kind] || 1;
       art = clamp(art, 1, 8);
-      img = pickNpcFrame(art, wobble || 0);
+      // SVG still is sharp; fall back to anim frames / bitmap still
+      img = (ASSET.npcSvg && ASSET.npcSvg[art - 1]) || pickNpcFrame(art, wobble || 0);
     }
     if (drawFishImage(img, x, y, size, facing, dead, wobble, alpha)) return;
-    drawVectorFish(x, y, size, facing, kind === "player" ? "player" : (kind || "tiny"), !!dead, wobble || 0, alpha);
+    const k = (kind === "player" || opts.player) ? "player" : (kind || "tiny");
+    let kk = k;
+    if (!opts.player && opts.artType) {
+      const map = ["tiny","pink","red","blue","green","yellow","navy","purple"];
+      kk = map[(opts.artType - 1) | 0] || k;
+      if (kk === "red") kk = "pink";
+      if (kk === "navy") kk = "blue";
+    }
+    drawVectorFish(x, y, size, facing, kk, !!dead, wobble || 0, alpha);
   }
 
 
@@ -1952,7 +2017,8 @@
       btnHover = (p.x > W - 90 && p.y > H - 90) ? "next" : null;
       canvas.style.cursor = btnHover ? "pointer" : "default";
     } else if (mode === "over" || mode === "win") {
-      btnHover = (p.x > W / 2 - 70 && p.x < W / 2 + 70 && p.y > H * 0.64 && p.y < H * 0.64 + 44) ? "retry" : null;
+      const r = overPanelMetrics().retry;
+      btnHover = (p.x > r.x && p.x < r.x + r.w && p.y > r.y && p.y < r.y + r.h) ? "retry" : null;
       canvas.style.cursor = btnHover ? "pointer" : "default";
     } else if (mode === "play") {
       canvas.style.cursor = hitPauseBtn(p) ? "pointer" : "default";
@@ -2076,7 +2142,8 @@
     } else if (mode === "help") {
       mode = "title";
     } else if (mode === "over" || mode === "win") {
-      if (p.x > W / 2 - 70 && p.x < W / 2 + 70 && p.y > H * 0.64 && p.y < H * 0.64 + 44) startGame();
+      const r = overPanelMetrics().retry;
+      if (p.x > r.x && p.x < r.x + r.w && p.y > r.y && p.y < r.y + r.h) startGame();
     }
   }
 
@@ -2306,15 +2373,20 @@
 
   // ─── Screens ─────────────────────────────────────────────
   function drawTitleSeabed() {
-    const strip = ASSET.seabed.stripTitle || ASSET.seabed.stripPlay;
-    if (strip) {
-      const sh = Math.min(H * 0.28, strip.height * (W / strip.width));
-      drawAsset(strip, 0, H - sh, W, sh);
-      return;
-    }
+    // Vector seabed only — strip assets bake a nested black/gold mini-frame
     const baseY = H - 4;
+    ctx.beginPath();
+    ctx.moveTo(0, baseY + 4);
+    ctx.lineTo(0, baseY - 40);
+    const pts = [
+      [40, -30], [90, -48], [150, -28], [220, -52], [300, -26],
+      [380, -46], [460, -28], [540, -42], [620, -30], [W, -36],
+    ];
+    for (const [x, dy] of pts) ctx.lineTo(x, baseY + dy);
+    ctx.lineTo(W, baseY + 4);
+    ctx.closePath();
     ctx.fillStyle = "#6B7388";
-    ctx.fillRect(0, baseY - 48, W, 52);
+    ctx.fill();
     drawKelp(32, baseY - 30, 2.0);
     drawCrab(155, baseY - 20, 1.75);
     drawClam(245, baseY - 16, 1.65);
@@ -2471,7 +2543,7 @@
     drawSeabed(true);
 
     ctx.save();
-    roundRect(FX + FRAME_PAD_X, FY + FRAME_PAD_Y, FW - FRAME_PAD_X * 2, FH - FRAME_PAD_Y * 2, 10);
+    roundRect(PLAY.x, PLAY.y, PLAY.w, PLAY.h, 10);
     ctx.clip();
 
     const all = fish.slice().sort((a, b) => a.y - b.y);
@@ -2514,19 +2586,32 @@
     drawPauseOverlay();
   }
 
+
+  function overPanelMetrics() {
+    const px = 70, py = 62, pw = 500, ph = 270;
+    const padX = pw * (73 / 1100), padY = ph * (73 / 790);
+    const innerX = px + padX, innerY = py + padY;
+    const innerW = pw - padX * 2, innerH = ph - padY * 2;
+    const btnY = innerY + innerH - 56;
+    return { px, py, pw, ph, padX, padY, innerX, innerY, innerW, innerH, btnY,
+      retry: { x: W / 2 - 70, y: btnY, w: 140, h: 40 } };
+  }
+
   function drawOver() {
     drawOuterBg();
     drawTitleSeabed();
 
     const px = 70, py = 62, pw = 500, ph = 270;
-    const padX = pw * (22 / 422), padY = ph * (22 / 303);
+    // Match gold-frame.webp hole ratios (not SWF 22/422 guess)
+    const padX = pw * (73 / 1100), padY = ph * (73 / 790);
+    const innerX = px + padX, innerY = py + padY;
+    const innerW = pw - padX * 2, innerH = ph - padY * 2;
 
     // Victorious / defeated fish peeks under the plaque (alive on win)
     if (deathFish) {
       const isWin = mode === "win";
       const sz = Math.max(42, (deathFish.size || 18) * (isWin ? 1.5 : 1.15));
-      // Force vector path with explicit dead flag (never hit/X-eye on win)
-      drawVectorFish(
+      drawFishSprite(
         W / 2 + (isWin ? 120 : 150),
         py + ph + 6,
         sz,
@@ -2534,43 +2619,49 @@
         "player",
         !isWin,
         isWin ? performance.now() / 180 : 0,
-        1
+        { player: true, forceBitmap: false }
       );
     }
 
     if (ASSET.ui.goldFrame) {
-      drawAsset(ASSET.ui.goldFrame, px, py, pw, ph);
+      // Fill inner water first, then frame on top (aligns blue with hole)
       ctx.save();
-      roundRect(px + padX, py + padY, pw - padX * 2, ph - padY * 2, 8);
+      roundRect(innerX, innerY, innerW, innerH, 8);
       ctx.fillStyle = "#A8D4F0";
       ctx.fill();
       ctx.restore();
+      drawAsset(ASSET.ui.goldFrame, px, py, pw, ph);
     } else {
       roundRect(px, py, pw, ph, 16);
       ctx.fillStyle = "#FFD01F";
       ctx.fill();
-      roundRect(px + padX, py + padY, pw - padX * 2, ph - padY * 2, 10);
+      roundRect(innerX, innerY, innerW, innerH, 10);
       ctx.fillStyle = "#A8D4F0";
       ctx.fill();
     }
 
+    // Clip all plaque content to the visible inner panel
+    ctx.save();
+    roundRect(innerX + 2, innerY + 2, innerW - 4, innerH - 4, 6);
+    ctx.clip();
+
     if (mode === "win" && ASSET.ui.congratulation) {
-      drawAssetSized(ASSET.ui.congratulation, W / 2, py + padY + 44, 360, 70);
+      drawAssetSized(ASSET.ui.congratulation, W / 2, innerY + 40, Math.min(320, innerW - 24), 58);
     } else if (ASSET.ui.gameOver) {
-      drawAssetSized(ASSET.ui.gameOver, W / 2, py + padY + 44, 260, 52);
+      drawAssetSized(ASSET.ui.gameOver, W / 2, innerY + 40, Math.min(240, innerW - 24), 48);
     } else {
-      ctx.font = "bold 42px Impact, Arial Black, sans-serif";
+      ctx.font = "bold 36px Impact, Arial Black, sans-serif";
       ctx.textAlign = "center";
       ctx.fillStyle = "#FFFFFF";
-      ctx.fillText(mode === "win" ? "CLEAR!" : "GAME OVER", W / 2, py + padY + 44);
+      ctx.fillText(mode === "win" ? "CLEAR!" : "GAME OVER", W / 2, innerY + 44);
     }
 
-    // Flush score strip: orange tag + LCD share one rounded bar
+    // Flush score strip: orange tag + LCD share one rounded bar (fit inside innerW)
     const text = String(Math.min(score, 999999)).padStart(6, "0");
-    const rowW = 360, rowH = 50;
+    const rowW = Math.min(320, innerW - 36), rowH = 46;
     const gx = W / 2 - rowW / 2;
-    const gy = py + ph * 0.50;
-    const tagW = 96;
+    const gy = innerY + innerH * 0.48;
+    const tagW = 88;
     roundRect(gx, gy, rowW, rowH, 12);
     ctx.fillStyle = "#1A1208";
     ctx.fill();
@@ -2604,7 +2695,7 @@
     ctx.fillText("점수", gx + tagW / 2 - 2, gy + rowH / 2 + 1);
 
     const lcdX = gx + tagW + 4, lcdW = rowW - tagW - 10;
-    const digW = 30, digH = 34, gap = 5;
+    const digW = 26, digH = 30, gap = 4;
     const tw = measureSevenSeg(text, digW, gap);
     // Yellow calculator digits (match original win plaque)
     drawSevenSegString(text, lcdX + (lcdW - tw) / 2, gy + (rowH - digH) / 2, digW, digH, gap, "#FFE566", "rgba(255,229,102,0.0)");
@@ -2615,7 +2706,8 @@
     ctx.lineWidth = 2.5;
     ctx.stroke();
 
-    roundRect(W / 2 - 70, H * 0.64, 140, 44, 12);
+    const btnY = innerY + innerH - 56;
+    roundRect(W / 2 - 70, btnY, 140, 40, 12);
     ctx.fillStyle = btnHover === "retry" ? "#FFA726" : "#FF8C00";
     ctx.fill();
     ctx.strokeStyle = "#000";
@@ -2625,7 +2717,8 @@
     ctx.font = "bold 20px Microsoft YaHei, sans-serif";
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
-    ctx.fillText("再玩一次", W / 2, H * 0.64 + 22);
+    ctx.fillText("再玩一次", W / 2, btnY + 20);
+    ctx.restore(); // end inner-panel clip
   }
 
 

@@ -904,7 +904,7 @@
     ctx.restore();
   }
 
-  // ─── Entities (SWF-faithful logic; see /workspace/4399-1876/SWF_LOGIC.md) ──
+  // ─── Entities (SWF-faithful logic; see SWF_LOGIC.md) ──
   // Original stage 550×400 @ 30fps. Positions live in SWF space; drawn into PLAY.
   const SWF = {
     W: 550,

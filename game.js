@@ -6,6 +6,20 @@
   const ctx = canvas.getContext("2d");
   const stage = document.getElementById("stage");
 
+  // Hi-DPI: backbuffer = logical 640×480 × devicePixelRatio (capped)
+  let dpr = 1;
+  function applyDpr() {
+    dpr = Math.min(window.devicePixelRatio || 1, 3);
+    canvas.width = Math.round(W * dpr);
+    canvas.height = Math.round(H * dpr);
+    canvas.style.width = W + "px";
+    canvas.style.height = H + "px";
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.imageSmoothingEnabled = true;
+    if ("imageSmoothingQuality" in ctx) ctx.imageSmoothingQuality = "high";
+  }
+  applyDpr();
+
   // Gold frame — thicker candy border; lives in left outer margin
   const FX = 58, FY = 48, FW = 550, FH = 410;
   const BORDER = 16; // candy gold thickness
@@ -46,6 +60,7 @@
   }
 
   function fitStage() {
+    applyDpr();
     const s = Math.min(window.innerWidth / W, window.innerHeight / H);
     stage.style.transform = `translate(-50%,-50%) scale(${s})`;
   }
@@ -61,6 +76,7 @@
     sfx: {},
     ui: {},
     seabed: {},
+    digits: { score: [], timer: [], colon: null },
   };
 
   function loadImage(src) {
@@ -171,6 +187,15 @@
       ASSET.seabed[k] = await loadImage(srcPath);
     }
 
+    // Bitmap digit fonts from SWF DefineSprite_384 (score) / _396 (timer)
+    ASSET.digits.score = [];
+    ASSET.digits.timer = [];
+    for (let d = 0; d <= 9; d++) {
+      ASSET.digits.score.push(await loadImage(`assets/ui/digits/score/${d}.png`));
+      ASSET.digits.timer.push(await loadImage(`assets/ui/digits/timer/${d}.png`));
+    }
+    ASSET.digits.colon = await loadImage("assets/ui/digits/timer/colon.png");
+
     ASSET.ready = ASSET.npcStill.some(Boolean) && ASSET.player.idle;
   }
 
@@ -212,13 +237,13 @@
 
   function initBubbles() {
     bubbles = [];
-    for (let i = 0; i < 32; i++) {
+    for (let i = 0; i < 14; i++) {
       bubbles.push({
         x: rand(0, W),
         y: rand(0, H),
-        r: rand(6, 48),
-        vy: rand(-14, -4),
-        a: rand(0.14, 0.38),
+        r: rand(8, 36),
+        vy: rand(-12, -3),
+        a: rand(0.10, 0.28),
       });
     }
   }
@@ -253,7 +278,20 @@
   function drawAssetCentered(img, cx, cy, scale) {
     if (!img) return false;
     scale = scale || 1;
+    // scale may be a multiplier on *logical* size if asset is HD —
+    // prefer drawAssetSized when you know the on-screen box.
     const w = img.width * scale, h = img.height * scale;
+    ctx.drawImage(img, cx - w / 2, cy - h / 2, w, h);
+    return true;
+  }
+
+  function drawAssetSized(img, cx, cy, maxW, maxH) {
+    if (!img) return false;
+    let w = maxW, h = maxW * (img.height / img.width);
+    if (maxH != null && h > maxH) {
+      h = maxH;
+      w = maxH * (img.width / img.height);
+    }
     ctx.drawImage(img, cx - w / 2, cy - h / 2, w, h);
     return true;
   }
@@ -262,24 +300,53 @@
   function drawOuterBg() {
     ctx.fillStyle = "#015BE6";
     ctx.fillRect(0, 0, W, H);
+    const bub = ASSET.ui.bgBubbles;
+    if (bub) {
+      // Original SWF shape 300 bubble field (transparent extract)
+      drawAsset(bub, 0, 0, W, H);
+    }
+    // Soft animated bubbles on top (sparse) for life
     for (const b of bubbles) {
       ctx.beginPath();
-      ctx.arc(b.x, b.y, b.r, 0, Math.PI * 2);
-      ctx.fillStyle = `rgba(255,255,255,${b.a})`;
+      ctx.arc(b.x, b.y, b.r * 0.55, 0, Math.PI * 2);
+      ctx.fillStyle = `rgba(255,255,255,${b.a * 0.45})`;
       ctx.fill();
       ctx.beginPath();
-      ctx.arc(b.x - b.r * 0.28, b.y - b.r * 0.28, b.r * 0.26, 0, Math.PI * 2);
-      ctx.fillStyle = `rgba(255,255,255,${b.a * 0.65})`;
+      ctx.arc(b.x - b.r * 0.15, b.y - b.r * 0.15, b.r * 0.14, 0, Math.PI * 2);
+      ctx.fillStyle = `rgba(255,255,255,${b.a * 0.35})`;
       ctx.fill();
-      // thin dark rim on larger bubbles (original style)
-      if (b.r > 18) {
-        ctx.beginPath();
-        ctx.arc(b.x, b.y, b.r, 0, Math.PI * 2);
-        ctx.strokeStyle = `rgba(0,40,120,${b.a * 0.35})`;
-        ctx.lineWidth = 1.5;
-        ctx.stroke();
-      }
     }
+  }
+
+  /** Draw SWF bitmap digit string. fonts = Image[10], optional colon Image */
+  function drawBitmapDigits(fonts, text, x, y, h, gap, colonImg) {
+    if (!fonts || !fonts.length) return x;
+    let cx = x;
+    for (let i = 0; i < text.length; i++) {
+      const ch = text[i];
+      if (ch === ":") {
+        const img = colonImg;
+        if (img) {
+          const dw = h * (img.width / img.height);
+          ctx.drawImage(img, cx, y, dw, h);
+          cx += dw + gap * 0.35;
+        } else {
+          ctx.fillStyle = "#E8D84A";
+          const r = Math.max(1.2, h * 0.08);
+          ctx.beginPath(); ctx.arc(cx + r, y + h * 0.32, r, 0, Math.PI * 2); ctx.fill();
+          ctx.beginPath(); ctx.arc(cx + r, y + h * 0.68, r, 0, Math.PI * 2); ctx.fill();
+          cx += r * 2.8 + gap * 0.35;
+        }
+        continue;
+      }
+      if (ch < "0" || ch > "9") continue;
+      const img = fonts[ch | 0];
+      if (!img) continue;
+      const dw = h * (img.width / img.height);
+      ctx.drawImage(img, cx, y, dw, h);
+      cx += dw + gap;
+    }
+    return cx;
   }
 
   // ─── Candy gold frame (original SWF shape, fallback vector) ──
@@ -289,7 +356,8 @@
       // Water playfield under frame
       ctx.save();
       // Approximate inner rect matching SWF frame bevel (~22px border on 422x303 → scale to FW x FH)
-      const padX = FW * (28 / 422), padY = FH * (28 / 303);
+      // SWF shape border ~22px on 422×303; keep screws proportional
+      const padX = FW * (22 / 422), padY = FH * (22 / 303);
       roundRect(FX + padX, FY + padY, FW - padX * 2, FH - padY * 2, 8);
       const wg = ctx.createLinearGradient(0, FY, 0, FY + FH);
       wg.addColorStop(0, "#5CC3FF");
@@ -664,7 +732,7 @@
       : (isHelp ? ASSET.ui.btnHelp : ASSET.ui.btnStart);
     if (img) {
       const s = hover ? 1.08 : 1;
-      drawAssetCentered(img, cx, cy, s * 1.15);
+      drawAssetSized(img, cx, cy, 107 * s, 89 * s);
       return;
     }
     const s = hover ? 1.07 : 1;
@@ -746,7 +814,8 @@
 
   function drawTitleLogo(cx, cy) {
     if (ASSET.ui.logo) {
-      drawAssetCentered(ASSET.ui.logo, cx, cy - 4, 1.55);
+      // Full title logo ~430×150 logical (asset is HD raster)
+      drawAssetSized(ASSET.ui.logo, cx, cy - 4, 460, 170);
       ctx.save();
       ctx.font = "bold 18px Microsoft YaHei, PingFang SC, sans-serif";
       ctx.textAlign = "center";
@@ -754,9 +823,9 @@
       ctx.lineWidth = 5;
       ctx.lineJoin = "round";
       ctx.strokeStyle = "#0A2A5A";
-      ctx.strokeText("大鱼吃小鱼", cx, cy + 88);
+      ctx.strokeText("大鱼吃小鱼", cx, cy + 100);
       ctx.fillStyle = "#FFFFFF";
-      ctx.fillText("大鱼吃小鱼", cx, cy + 88);
+      ctx.fillText("大鱼吃小鱼", cx, cy + 100);
       ctx.restore();
       return;
     }
@@ -774,26 +843,36 @@
     ctx.restore();
   }
 
-  // ─── SCORE plaque ────────────────────────────────────────
+  // ─── SCORE plaque (bitmap digits from SWF score_mc) ──────
   function drawScorePlaque() {
     const img = ASSET.ui.scorePlaque;
-    const pw = img ? Math.max(150, img.width * 1.35) : 150;
-    const ph = img ? Math.max(42, img.height * 1.35) : 42;
+    // Plaque asset is 3× source; display ~173×56 logical
+    const pw = 173;
+    const ph = 56;
     const px = FX + FW / 2 - pw / 2;
     const py = FY - ph * 0.55;
+    const text = String(Math.min(score, 999999)).padStart(6, "0");
     if (img) {
       drawAsset(img, px, py, pw, ph);
-      // Overlay live score on LCD band (leave SCORE label intact)
-      const lcdY = py + ph * 0.48;
-      const lcdH = ph * 0.46;
-      roundRect(px + pw * 0.1, lcdY, pw * 0.8, lcdH, 3);
-      ctx.fillStyle = "#1A1008";
-      ctx.fill();
-      ctx.fillStyle = "#FFFFFF";
-      ctx.font = `bold ${Math.max(13, ph * 0.36)}px Arial, sans-serif`;
-      ctx.textAlign = "center";
-      ctx.textBaseline = "middle";
-      ctx.fillText(String(score).padStart(6, "0"), px + pw / 2, lcdY + lcdH / 2 + 1);
+      const lcdX = px + pw * 0.12;
+      const lcdY = py + ph * 0.50;
+      const lcdH = ph * 0.40;
+      const fonts = ASSET.digits.score;
+      if (fonts && fonts[0]) {
+        // Center 6 digits in LCD
+        const gap = 1.5;
+        const digH = lcdH * 0.92;
+        const digW = digH * (fonts[0].width / fonts[0].height);
+        const totalW = digW * 6 + gap * 5;
+        const startX = px + (pw - totalW) / 2;
+        drawBitmapDigits(fonts, text, startX, lcdY + (lcdH - digH) / 2, digH, gap, null);
+      } else {
+        ctx.fillStyle = "#FFFFFF";
+        ctx.font = `bold ${Math.max(13, ph * 0.36)}px Arial, sans-serif`;
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText(text, px + pw / 2, lcdY + lcdH / 2);
+      }
       return;
     }
     roundRect(px - 2, py - 2, pw + 4, ph + 4, 8);
@@ -810,38 +889,49 @@
     roundRect(px + 10, py + 18, pw - 20, 18, 3);
     ctx.fillStyle = "#111";
     ctx.fill();
-    ctx.fillStyle = "#FFEE58";
-    ctx.font = "bold 15px 'Courier New', monospace";
-    ctx.fillText(String(score).padStart(6, "0"), px + pw / 2, py + 28);
+    ctx.fillStyle = "#FFFFFF";
+    ctx.font = "bold 15px Arial, sans-serif";
+    ctx.fillText(text, px + pw / 2, py + 28);
   }
 
-  // ─── TIME alarm clock (original SWF sprite) ──────────────
+  // ─── TIME alarm clock (bitmap 7-seg digits from SWF) ─────
   function drawTimeClock() {
     const img = ASSET.ui.clock;
     const cx = FX + FW - 4;
     const cy = FY + 8;
+    // SWF refreshTimer ticks once/sec as h:mm:ss — remake keeps finer cs for feel
     const total = Math.max(0, timeSec);
-    const m = Math.floor(total / 60);
+    const hh = Math.floor(total / 3600);
+    const m = Math.floor((total % 3600) / 60);
     const s = Math.floor(total % 60);
-    const cs = Math.floor((total % 1) * 100);
-    const tstr = `${m}:${String(s).padStart(2, "0")}:${String(cs).padStart(2, "0")}`;
+    const tstr = `${hh}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
 
     if (img) {
-      const sc = 1.15;
-      const w = img.width * sc, h = img.height * sc;
+      // Clock asset is 3×; display near original 95×99
+      const w = 95, h = 99;
       const x = cx - w * 0.55, y = cy - h * 0.35;
       drawAsset(img, x, y, w, h);
-      // Overlay live time on LCD
-      const lcdW = w * 0.55, lcdH = h * 0.16;
-      const lcdX = x + w * 0.225, lcdY = y + h * 0.42;
-      roundRect(lcdX, lcdY, lcdW, lcdH, 2);
-      ctx.fillStyle = "#111";
-      ctx.fill();
-      ctx.fillStyle = "#FF8C00";
-      ctx.font = `bold ${Math.max(9, lcdH * 0.85)}px 'Courier New', monospace`;
-      ctx.textAlign = "center";
-      ctx.textBaseline = "middle";
-      ctx.fillText(tstr, lcdX + lcdW / 2, lcdY + lcdH / 2 + 0.5);
+      const lcdW = w * 0.56, lcdH = h * 0.15;
+      const lcdX = x + w * 0.22, lcdY = y + h * 0.42;
+      const fonts = ASSET.digits.timer;
+      if (fonts && fonts[0]) {
+        const digH = lcdH * 0.95;
+        const gap = 0.8;
+        // Estimate width
+        let tw = 0;
+        for (const ch of tstr) {
+          if (ch === ":") tw += digH * 0.35;
+          else tw += digH * (fonts[0].width / fonts[0].height) + gap;
+        }
+        const startX = lcdX + (lcdW - tw) / 2;
+        drawBitmapDigits(fonts, tstr, startX, lcdY + (lcdH - digH) / 2, digH, gap, ASSET.digits.colon);
+      } else {
+        ctx.fillStyle = "#E8D84A";
+        ctx.font = `bold ${Math.max(9, lcdH * 0.85)}px 'Courier New', monospace`;
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText(tstr, lcdX + lcdW / 2, lcdY + lcdH / 2 + 0.5);
+      }
       return;
     }
 
@@ -860,7 +950,7 @@
     roundRect(cx - 20, cy + 8, 40, 14, 2);
     ctx.fillStyle = "#111";
     ctx.fill();
-    ctx.fillStyle = "#FF8C00";
+    ctx.fillStyle = "#E8D84A";
     ctx.font = "bold 11px 'Courier New', monospace";
     ctx.fillText(tstr, cx, cy + 16);
     ctx.restore();
@@ -870,8 +960,9 @@
     const icon = ASSET.ui.lifeFish;
     if (icon) {
       for (let i = 0; i < lives; i++) {
-        const s = 2.2;
-        drawAsset(icon, 12, 88 + i * 48, icon.width * s, icon.height * s);
+        // Logical ~40×22 (SWF life icon), asset may be 3×
+        const dw = 40, dh = 22;
+        drawAsset(icon, 12, 88 + i * 48, dw, dh);
       }
       return;
     }
@@ -1298,8 +1389,13 @@
     if (player.x < SWF.WRAP_L) player.x = SWF.WRAP_R;
 
     const nextY = player.y + player.ymove * frames;
-    if (nextY < SWF.Y_MAX && nextY > SWF.Y_MIN) player.y = nextY;
-    else player.ymove = 0;
+    if (nextY < SWF.Y_MAX && nextY > SWF.Y_MIN) {
+      player.y = nextY;
+    } else if (player.ymove !== 0) {
+      // SWF clamps Y and trail-bubble reset plays bonk; remake: bonk on bound hit
+      player.ymove = 0;
+      playSfx("bonk", { volume: 0.55 });
+    }
 
     player.size = scaleToPx(player.f_size) + (growFlash > 0 ? 2 : 0);
     player.wobble += dt * 8;
@@ -1372,7 +1468,8 @@
           };
           mode = "over";
           ensureBgm(false);
-          playSfx("lose", { volume: 0.85 });
+          playSfx("sploosh", { volume: 0.9 });
+          setTimeout(() => playSfx("lose", { volume: 0.85 }), 180);
           break;
         }
         // Soft reset position (SWF only plays hit anim / life icon)
@@ -1415,11 +1512,6 @@
 
   function drawTitle() {
     drawOuterBg();
-    if (ASSET.ui.bgBubbles) {
-      ctx.globalAlpha = 0.85;
-      drawAsset(ASSET.ui.bgBubbles, 0, 0, W, H);
-      ctx.globalAlpha = 1;
-    }
     drawTitleSeabed();
     drawTitleLogo(W / 2, H * 0.26);
     drawStarButton(W * 0.35, H * 0.52, "#FF8C00", "开始", btnHover === "start", "start");
@@ -1449,7 +1541,7 @@
       ctx.fillText(tip, W / 2, py + ph + 18);
       ctx.restore();
       const next = ASSET.ui.btnNext;
-      if (next) drawAssetCentered(next, W - 55, H - 55, 1.8);
+      if (next) drawAssetSized(next, W - 55, H - 55, 48, 48);
       else {
         ctx.beginPath();
         ctx.arc(W - 55, H - 55, 28, 0, Math.PI * 2);
@@ -1563,7 +1655,8 @@
 
     // HUD: original logo + SCORE + TIME + lives
     if (ASSET.ui.logoHud) {
-      drawAsset(ASSET.ui.logoHud, FX - 8, FY - 16, ASSET.ui.logoHud.width * 1.15, ASSET.ui.logoHud.height * 1.15);
+      // Logical HUD logo ~110×48 (asset may be 3× vector raster)
+      drawAsset(ASSET.ui.logoHud, FX - 10, FY - 18, 110, 48);
     } else if (ASSET.ui.logo) {
       drawAsset(ASSET.ui.logo, FX - 16, FY - 28, 140, 70);
     } else {
@@ -1600,9 +1693,9 @@
     }
 
     if (mode === "win" && ASSET.ui.congratulation) {
-      drawAssetCentered(ASSET.ui.congratulation, W / 2, py + 70, 0.55);
+      drawAssetSized(ASSET.ui.congratulation, W / 2, py + 70, 380, 80);
     } else if (ASSET.ui.gameOver) {
-      drawAssetCentered(ASSET.ui.gameOver, W / 2, py + 70, 1.4);
+      drawAssetSized(ASSET.ui.gameOver, W / 2, py + 70, 280, 56);
     } else {
       ctx.font = "bold 42px Impact, Arial Black, sans-serif";
       ctx.textAlign = "center";
@@ -1617,17 +1710,27 @@
       const gh = gw * (gs.height / gs.width);
       const gx = W / 2 - gw / 2, gy = py + 120;
       drawAsset(gs, gx, gy, gw, gh);
-      // Cover baked-in zeros then draw live score
       const digitX = gx + gw * 0.28;
       const digitW = gw * 0.70;
       roundRect(digitX, gy + gh * 0.12, digitW, gh * 0.76, 3);
       ctx.fillStyle = "#000";
       ctx.fill();
-      ctx.fillStyle = "#FFEE58";
-      ctx.font = `bold ${Math.max(18, gh * 0.55)}px 'Courier New', monospace`;
-      ctx.textAlign = "right";
-      ctx.textBaseline = "middle";
-      ctx.fillText(String(score).padStart(6, "0"), gx + gw - 14, gy + gh / 2 + 1);
+      const text = String(Math.min(score, 999999)).padStart(6, "0");
+      const fonts = ASSET.digits.score;
+      if (fonts && fonts[0]) {
+        const digH = gh * 0.62;
+        const gap = 2;
+        const digW = digH * (fonts[0].width / fonts[0].height);
+        const totalW = digW * 6 + gap * 5;
+        const startX = gx + gw - 14 - totalW;
+        drawBitmapDigits(fonts, text, startX, gy + (gh - digH) / 2, digH, gap, null);
+      } else {
+        ctx.fillStyle = "#FFEE58";
+        ctx.font = `bold ${Math.max(18, gh * 0.55)}px 'Courier New', monospace`;
+        ctx.textAlign = "right";
+        ctx.textBaseline = "middle";
+        ctx.fillText(text, gx + gw - 14, gy + gh / 2 + 1);
+      }
     } else {
       ctx.fillStyle = "#FFEE58";
       ctx.font = "bold 28px 'Courier New', monospace";

@@ -18,7 +18,7 @@ Matched / improved:
 ## Phase 3 — mobile feel
 
 - **Eat SFX latency**: Web Audio `AudioBuffer` one-shots (no HTMLAudio restart lag); unlock on first gesture; trimmed Eat2 leading silence; removed 40ms gulp `setTimeout`.
-- **Virtual joystick** (touch / coarse pointer / maxTouchPoints): semi-transparent nest at bottom-left in play mode; maps to same arrow accel as keyboard; does not cover SCORE/TIME HUD.
+- **Virtual joystick** (touch / coarse pointer / maxTouchPoints): HTML overlay in the letterbox margin (below stage in portrait, left of stage in landscape); never drawn on the playfield canvas; maps to same arrow accel as keyboard.
 
 ## Remaining gaps
 

@@ -35,35 +35,123 @@
   let pointerDown = false;
   let kbdActive = false; // arrow/WASD held → ignore pointer follow
 
-  // Virtual joystick (phone/tablet only) — bottom-left, transparent
+  let mode = "loading"; // loading | title | help | play | over | win
+
+  // Virtual joystick (phone/tablet) — HTML overlay in letterbox, NOT on canvas
+  const joypad = document.getElementById("joypad");
+  const joycanvas = document.getElementById("joycanvas");
+  const joyctx = joycanvas ? joycanvas.getContext("2d") : null;
   const joy = {
     enabled: false,
     active: false,
     touchId: null,
-    ox: 0, oy: 0,   // origin (canvas coords)
-    dx: 0, dy: 0,   // stick offset
-    baseR: 80,
-    stickR: 32,
-    maxD: 60,
+    ox: 0, oy: 0,   // nest center in joypad CSS px
+    dx: 0, dy: 0,   // stick offset in joypad CSS px
+    baseR: 48,
+    stickR: 22,
+    maxD: 36,
+    cssSize: 120,
   };
   function detectTouchUI() {
     const coarse = window.matchMedia && window.matchMedia("(pointer: coarse)").matches;
     const touchPts = (navigator.maxTouchPoints || 0) > 0;
     const small = Math.min(window.innerWidth, window.innerHeight) < 900;
     joy.enabled = !!(coarse || touchPts || ("ontouchstart" in window && small));
-    // Scale with viewport: canvas logical 640 wide; on a small phone the canvas
-    // is shrunk, so grow the logical radius to keep ~75-90 CSS px on screen.
-    const cssW = (canvas.getBoundingClientRect().width || window.innerWidth) || 640;
-    const k = Math.max(1, Math.min(1.6, 420 / cssW * 1.0 + 0.55));
-    joy.baseR = Math.round(80 * k);
-    joy.stickR = Math.round(32 * k);
-    joy.maxD = Math.round(60 * k);
+    layoutJoypad();
+  }
+  function safeInset(side) {
+    // env() not readable from JS reliably; keep a modest pad for notches
+    return 10;
+  }
+  /** Place stick in empty margin left/bottom of letterboxed stage (portrait & landscape). */
+  function layoutJoypad() {
+    if (!joypad || !joycanvas) return;
+    if (!joy.enabled) {
+      joypad.classList.remove("on");
+      joypad.setAttribute("aria-hidden", "true");
+      return;
+    }
+    const sr = stage.getBoundingClientRect();
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    const safeL = safeInset("left");
+    const safeB = safeInset("bottom");
+    const safeR = safeInset("right");
+    const short = Math.min(vw, vh);
+    const size = Math.round(Math.min(150, Math.max(104, short * 0.24)));
+    joy.cssSize = size;
+    joy.baseR = Math.round(size * 0.42);
+    joy.stickR = Math.round(size * 0.20);
+    joy.maxD = Math.round(size * 0.32);
+    joy.ox = size / 2;
+    joy.oy = size / 2;
+
+    const gapBelow = vh - sr.bottom;
+    const gapLeft = sr.left;
+    const gapRight = vw - sr.right;
+    let left, top;
+
+    if (gapBelow >= size + safeB + 4) {
+      // Portrait / tall: sit in bottom letterbox, left side
+      left = Math.max(safeL, Math.min(sr.left + 4, vw - size - safeR));
+      top = vh - size - safeB;
+      if (top < sr.bottom + 2) top = sr.bottom + 2;
+    } else if (gapLeft >= size + safeL + 4) {
+      // Landscape: sit in left letterbox, lower end
+      left = Math.max(safeL, sr.left - size - 8);
+      top = Math.min(vh - size - safeB, Math.max(sr.top + 8, sr.bottom - size - 4));
+    } else if (gapRight >= size + safeR + 4 && gapLeft < gapRight) {
+      // Rare: more room on right — still prefer lower-left of viewport if possible
+      left = safeL;
+      top = vh - size - safeB;
+      // If that overlaps stage heavily, fall back to right margin bottom
+      if (left + size > sr.left + 8) {
+        left = Math.min(vw - size - safeR, sr.right + 8);
+        top = Math.min(vh - size - safeB, Math.max(sr.top + 8, sr.bottom - size - 4));
+      }
+    } else {
+      // Tiny margins: park at viewport bottom-left, prefer below/left of stage chrome
+      left = safeL;
+      top = vh - size - safeB;
+      if (gapBelow > 24) top = Math.max(top, sr.bottom + 2);
+      if (gapLeft > 24) left = Math.max(safeL, sr.left - size - 4);
+    }
+
+    joypad.style.left = Math.round(left) + "px";
+    joypad.style.top = Math.round(top) + "px";
+    joypad.style.width = size + "px";
+    joypad.style.height = size + "px";
+    const d = Math.min(window.devicePixelRatio || 1, 3);
+    joycanvas.width = Math.round(size * d);
+    joycanvas.height = Math.round(size * d);
+    if (joyctx) {
+      joyctx.setTransform(d, 0, 0, d, 0, 0);
+      joyctx.imageSmoothingEnabled = true;
+    }
+    syncJoypadVisibility();
+    drawJoystick();
+  }
+  function syncJoypadVisibility() {
+    if (!joypad) return;
+    const show = joy.enabled && mode === "play";
+    joypad.classList.toggle("on", show);
+    joypad.setAttribute("aria-hidden", show ? "false" : "true");
+    if (!show && joy.active) {
+      joy.active = false;
+      joy.touchId = null;
+      joy.dx = 0;
+      joy.dy = 0;
+    }
   }
   detectTouchUI();
   window.addEventListener("resize", detectTouchUI);
-  window.__bfQA = { over(){ deathFish = null; score = 12345; mode = "over"; }, play(){ startGame(); }, joy(){ joy.enabled = true; } };
+  window.addEventListener("orientationchange", () => setTimeout(detectTouchUI, 60));
+  window.__bfQA = {
+    over(){ deathFish = null; score = 12345; mode = "over"; syncJoypadVisibility(); },
+    play(){ startGame(); },
+    joy(){ joy.enabled = true; layoutJoypad(); },
+  };
 
-  let mode = "loading"; // loading | title | help | play | over | win
   let score = 0;
   let lives = 3;
   let level = 1;
@@ -91,12 +179,13 @@
     applyDpr();
     const s = Math.min(window.innerWidth / W, window.innerHeight / H);
     stage.style.transform = `translate(-50%,-50%) scale(${s})`;
+    layoutJoypad();
   }
   window.addEventListener("resize", fitStage);
   fitStage();
 
   // ─── Original SWF assets (WebP + phased load for slow nets) ───
-  const ASSET_VER = "v14";
+  const ASSET_VER = "v15";
   const ASSET = {
     ready: false,       // title-critical ready
     playReady: false,   // enough to start a round
@@ -1489,6 +1578,8 @@
 
   function beginRound() {
     mode = "play";
+    syncJoypadVisibility();
+    drawJoystick();
     score = 0;
     lives = 3;
     level = 1;
@@ -1541,19 +1632,13 @@
     return { x: (t.clientX - r.left) * sx, y: (t.clientY - r.top) * sy };
   }
 
-  /** Default joystick nest: bottom-left margin outside SCORE/UI */
-  function joyHome() {
-    return { x: joy.baseR + 14, y: H - joy.baseR - 14 };
-  }
-
-  function joyHit(p) {
-    const h = joyHome();
-    return Math.hypot(p.x - h.x, p.y - h.y) <= joy.baseR * 1.6;
+  function joyPadPosFromTouch(t) {
+    const r = joypad.getBoundingClientRect();
+    return { x: t.clientX - r.left, y: t.clientY - r.top };
   }
 
   function joySetFromPoint(p) {
-    const ox = joy.active ? joy.ox : joyHome().x;
-    const oy = joy.active ? joy.oy : joyHome().y;
+    const ox = joy.ox, oy = joy.oy;
     let dx = p.x - ox, dy = p.y - oy;
     const len = Math.hypot(dx, dy);
     if (len > joy.maxD) {
@@ -1576,36 +1661,34 @@
   }
 
   function drawJoystick() {
+    if (!joyctx || !joypad) return;
+    syncJoypadVisibility();
     if (!joy.enabled || mode !== "play") return;
-    const home = joyHome();
-    const cx = joy.active ? joy.ox : home.x;
-    const cy = joy.active ? joy.oy : home.y;
+    const size = joy.cssSize;
+    const cx = joy.ox, cy = joy.oy;
     const sx = cx + (joy.active ? joy.dx : 0);
     const sy = cy + (joy.active ? joy.dy : 0);
-    ctx.save();
-    // Base ring
-    ctx.beginPath();
-    ctx.arc(cx, cy, joy.baseR, 0, Math.PI * 2);
-    ctx.fillStyle = "rgba(0,0,0,0.18)";
-    ctx.fill();
-    ctx.lineWidth = 3;
-    ctx.strokeStyle = "rgba(255,255,255,0.28)";
-    ctx.stroke();
-    // Inner guide
-    ctx.beginPath();
-    ctx.arc(cx, cy, joy.maxD, 0, Math.PI * 2);
-    ctx.strokeStyle = "rgba(255,255,255,0.12)";
-    ctx.lineWidth = 2;
-    ctx.stroke();
-    // Stick
-    ctx.beginPath();
-    ctx.arc(sx, sy, joy.stickR, 0, Math.PI * 2);
-    ctx.fillStyle = joy.active ? "rgba(255,220,80,0.45)" : "rgba(255,255,255,0.28)";
-    ctx.fill();
-    ctx.strokeStyle = "rgba(255,255,255,0.4)";
-    ctx.lineWidth = 2;
-    ctx.stroke();
-    ctx.restore();
+    joyctx.clearRect(0, 0, size, size);
+    // Base nest
+    joyctx.beginPath();
+    joyctx.arc(cx, cy, joy.baseR, 0, Math.PI * 2);
+    joyctx.fillStyle = "rgba(0,0,0,0.22)";
+    joyctx.fill();
+    joyctx.lineWidth = 3;
+    joyctx.strokeStyle = "rgba(255,255,255,0.32)";
+    joyctx.stroke();
+    joyctx.beginPath();
+    joyctx.arc(cx, cy, joy.maxD, 0, Math.PI * 2);
+    joyctx.strokeStyle = "rgba(255,255,255,0.14)";
+    joyctx.lineWidth = 2;
+    joyctx.stroke();
+    joyctx.beginPath();
+    joyctx.arc(sx, sy, joy.stickR, 0, Math.PI * 2);
+    joyctx.fillStyle = joy.active ? "rgba(255,220,80,0.5)" : "rgba(255,255,255,0.32)";
+    joyctx.fill();
+    joyctx.strokeStyle = "rgba(255,255,255,0.45)";
+    joyctx.lineWidth = 2;
+    joyctx.stroke();
   }
 
   function hitStarBtn(p, cx, cy) {
@@ -1644,17 +1727,6 @@
     unlockAudio();
     for (const t of e.changedTouches) {
       const p = canvasPosFromTouch(t);
-      if (mode === "play" && joy.enabled && !joy.active && (joyHit(p) || p.y > H * 0.45 && p.x < W * 0.5)) {
-        // Capture as joystick (bottom-left zone / nest)
-        joy.active = true;
-        joy.touchId = t.identifier;
-        const home = joyHome();
-        // Fixed nest origin so HUD stays clear; stick follows finger within maxD
-        joy.ox = home.x;
-        joy.oy = home.y;
-        joySetFromPoint(p);
-        continue;
-      }
       pointerDown = true;
       pointer = p;
       handleClick(p);
@@ -1663,30 +1735,58 @@
   canvas.addEventListener("touchmove", (e) => {
     e.preventDefault();
     for (const t of e.changedTouches) {
-      const p = canvasPosFromTouch(t);
-      if (joy.active && t.identifier === joy.touchId) {
-        joySetFromPoint(p);
-        continue;
-      }
-      pointer = p;
+      pointer = canvasPosFromTouch(t);
     }
   }, { passive: false });
-  function endJoyTouch(e) {
-    for (const t of e.changedTouches) {
-      if (joy.active && t.identifier === joy.touchId) {
-        joy.active = false;
-        joy.touchId = null;
-        joy.dx = 0;
-        joy.dy = 0;
-      }
-    }
+  canvas.addEventListener("touchend", (e) => {
     if (!e.touches || e.touches.length === 0) {
       pointerDown = false;
       pointer = null;
     }
+  });
+  canvas.addEventListener("touchcancel", () => { pointerDown = false; pointer = null; });
+
+  // Stick input only on the letterbox overlay (never steals canvas touches)
+  if (joypad) {
+    joypad.addEventListener("touchstart", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      unlockAudio();
+      if (mode !== "play" || !joy.enabled) return;
+      for (const t of e.changedTouches) {
+        if (joy.active) break;
+        joy.active = true;
+        joy.touchId = t.identifier;
+        joy.ox = joy.cssSize / 2;
+        joy.oy = joy.cssSize / 2;
+        joySetFromPoint(joyPadPosFromTouch(t));
+        drawJoystick();
+      }
+    }, { passive: false });
+    joypad.addEventListener("touchmove", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      for (const t of e.changedTouches) {
+        if (joy.active && t.identifier === joy.touchId) {
+          joySetFromPoint(joyPadPosFromTouch(t));
+          drawJoystick();
+        }
+      }
+    }, { passive: false });
+    function endPadTouch(e) {
+      for (const t of e.changedTouches) {
+        if (joy.active && t.identifier === joy.touchId) {
+          joy.active = false;
+          joy.touchId = null;
+          joy.dx = 0;
+          joy.dy = 0;
+          drawJoystick();
+        }
+      }
+    }
+    joypad.addEventListener("touchend", endPadTouch);
+    joypad.addEventListener("touchcancel", endPadTouch);
   }
-  canvas.addEventListener("touchend", endJoyTouch);
-  canvas.addEventListener("touchcancel", endJoyTouch);
 
   let audioUnlocked = false;
   function unlockAudio() {
@@ -2161,7 +2261,6 @@
     drawScorePlaque();
     drawTimeClock();
     drawLives();
-    drawJoystick();
   }
 
   function drawOver() {
@@ -2260,6 +2359,9 @@
     else if (mode === "help") drawHelp();
     else if (mode === "play") drawPlay();
     else if (mode === "over" || mode === "win") drawOver();
+    // Keep letterbox stick visible only during play (and redraw while held)
+    if (mode === "play") drawJoystick();
+    else syncJoypadVisibility();
     requestAnimationFrame(frame);
   }
   if (location.hash === "#play") startGame();

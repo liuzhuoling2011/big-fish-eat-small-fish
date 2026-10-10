@@ -1,36 +1,19 @@
 # 大鱼吃小鱼 — 꼬기꼬기（HTML5 重制）
 
-按 4399 flash/1876 原版 Flash（KeBi Kids **꼬기꼬기**）画面与 HUD 用 Canvas 重制。对照本机 Ruffle 实机截图（`ruffle-shots/02–06`）与封面。
+按 4399 flash/1876 原版 Flash（KeBi Kids **꼬기꼬기**）画面与 HUD 用 Canvas 重制。
+
+玩法数值已从原版 SWF（CWS Flash 6 / AVM1）反汇编还原，详见仓库外分析笔记；核心公式：
+
+- 玩家初始 `f_size = 15`，吃掉更小的鱼：`f_size += fishsize/75`，得分 `fishsize*6`
+- 敌鱼大小 `random(39+int(min(f_size,100)/3))+5`，速度 `(random(6)-3)*(1.1+min(f_size,150)/300)`
+- 惯性 `DRAG=0.93`，方向键加速度 `swimspeed=0.25`（Shift 加速 0.5）
+- `f_size > 250` 通关；3 条命
 
 ## 打开方式
 
-双击 `index.html`，或用本地静态服务打开本目录。
-
-深链（方便对照）：`index.html#play` / `#help` / `#over`
+- GitHub Pages：https://liuzhuoling2011.github.io/big-fish-eat-small-fish/
+- 本地：打开 `index.html`，或 `python3 -m http.server`
 
 ## 操作
 
-- **方向键 / WASD**：主控（按住时忽略鼠标跟随，加速更干脆）
-- **鼠标跟随 / 触屏滑动**：未按键时可用
-- 标题：橙色海星「开始」、绿色海星「说明」
-
-## 玩法
-
-吃比自己小的鱼加分并长大；撞到更大的鱼丢命（3 条命）。接近体型会弹开。顶栏 SCORE（6 位）/ 闹钟 TIME；左侧框外三条橙鱼表示生命。
-
-## 画面要点（对照原版）
-
-- Logo：厚黑块状偏移阴影 + 白描边 + 红橙渐变
-- 海星按钮：蓬松高光海星，中心白圆中文
-- 海底：大红蟹、蓝蛤、橙海葵、斑点壳、笑脸海星、高海带
-- 金框：厚糖果黄圆角 + 强 bevel
-- 闹钟：双铃 + 橙数字，无 LEVEL 字样
-
-## 资源说明
-
-全部为 Canvas 自绘，**未嵌入**原版 SWF 位图。
-
-## 文件
-
-- `index.html` — 640×480 舞台
-- `game.js` — 逻辑与绘制
+方向键 / WASD 游动（原版手感）；触屏/鼠标跟随（手机）；Shift 加速。

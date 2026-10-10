@@ -21,7 +21,7 @@
   let pointerDown = false;
   let kbdActive = false; // arrow/WASD held → ignore pointer follow
 
-  let mode = "title"; // title | help | play | over
+  let mode = "title"; // title | help | play | over | win
   let score = 0;
   let lives = 3;
   let level = 1;
@@ -904,68 +904,106 @@
     ctx.restore();
   }
 
-  // ─── Entities ────────────────────────────────────────────
-  const KINDS = [
-    { kind: "tiny",   sizeMul: 0.55, score: 50,  weight: 3 },
-    { kind: "pink",   sizeMul: 0.75, score: 100, weight: 3 },
-    { kind: "yellow", sizeMul: 1.15, score: 200, weight: 2 },
-    { kind: "blue",   sizeMul: 1.45, score: 350, weight: 2 },
-    { kind: "green",  sizeMul: 1.9,  score: 500, weight: 1 },
-    { kind: "purple", sizeMul: 2.4,  score: 800, weight: 1 },
+  // ─── Entities (SWF-faithful logic; see /workspace/4399-1876/SWF_LOGIC.md) ──
+  // Original stage 550×400 @ 30fps. Positions live in SWF space; drawn into PLAY.
+  const SWF = {
+    W: 550,
+    H: 400,
+    FPS: 30,
+    DRAG: 0.93,
+    SWIM: 0.25,
+    SWIM_TURBO: 0.5,
+    F_SIZE0: 15,
+    F_WIN: 250,
+    NPC: 10,
+    WRAP_L: 80,
+    WRAP_R: 450,
+    Y_MIN: 70,
+    Y_MAX: 360,
+    SPAWN_Y0: 95,
+    SPAWN_YH: 240,
+  };
+
+  // Flash fish frame (1..10) → remake palette kind
+  const FRAME_KIND = [
+    "tiny", "tiny", "pink", "pink", "yellow",
+    "blue", "green", "purple", "purple", "purple",
   ];
 
-  function playerBaseSize() {
-    return 14 + Math.min(40, score / 800) + (level - 1) * 2;
+  function toScreenX(x) { return PLAY.x + (x / SWF.W) * PLAY.w; }
+  function toScreenY(y) { return PLAY.y + (y / SWF.H) * PLAY.h; }
+  function toSwfX(px) { return ((px - PLAY.x) / PLAY.w) * SWF.W; }
+  function toSwfY(py) { return ((py - PLAY.y) / PLAY.h) * SWF.H; }
+  /** Map Flash _xscale units to on-screen radius-ish size */
+  function scaleToPx(fSize) {
+    return Math.max(4, (fSize / SWF.W) * PLAY.w);
+  }
+
+  function rollFishSize(fSize) {
+    const rSize = Math.min(fSize, 100);
+    // Flash random(n) → [0, n); fishsize = random(39+int(rSize/3)) + 5
+    const span = 39 + ((rSize / 3) | 0);
+    return ((Math.random() * span) | 0) + 5;
+  }
+
+  function rollFishSpeed(fSize) {
+    const rSpd = Math.min(fSize, 150);
+    let spd = (((Math.random() * 6) | 0) - 3) * (1.1 + rSpd / 300);
+    if (spd === 0) spd = 2;
+    return spd;
+  }
+
+  function frameForSize(fishsize) {
+    return ((fishsize / 8) | 0) + 1; // 1..10
+  }
+
+  function kindForFrame(frame) {
+    return FRAME_KIND[clamp(frame, 1, 10) - 1];
+  }
+
+  function placeFishSlot(slot, fSize) {
+    const fishsize = rollFishSize(fSize);
+    let fishspeed = rollFishSpeed(fSize);
+    const frame = frameForSize(fishsize);
+    const fromLeft = fishspeed > 0;
+    if (!fromLeft && fishspeed === 0) fishspeed = 2;
+    slot.fishsize = fishsize;
+    slot.fishspeed = fishspeed;
+    slot.frame = frame;
+    slot.kind = kindForFrame(frame);
+    slot.x = fromLeft ? -90 : 640;
+    slot.y = SWF.SPAWN_Y0 + ((Math.random() * SWF.SPAWN_YH) | 0);
+    slot.facing = fromLeft ? 1 : -1;
+    slot.size = scaleToPx(fishsize);
+    slot.wobble = rand(0, Math.PI * 2);
+    slot.alive = true;
+  }
+
+  function makeNpcSlots(fSize) {
+    const slots = [];
+    for (let i = 1; i <= SWF.NPC; i++) {
+      const slot = { id: i };
+      placeFishSlot(slot, fSize);
+      slots.push(slot);
+    }
+    return slots;
   }
 
   function makePlayer() {
     return {
-      x: PLAY.x + PLAY.w * 0.4,
-      y: PLAY.y + PLAY.h * 0.35,
-      vx: 0, vy: 0,
-      size: playerBaseSize(),
+      x: 200,
+      y: 180,
+      xmove: 0,
+      ymove: 7, // SWF init downward drift
+      f_size: SWF.F_SIZE0,
+      size: scaleToPx(SWF.F_SIZE0),
       facing: 1,
       kind: "player",
       wobble: 0,
     };
   }
 
-  function weightedKind() {
-    const lvlBias = Math.min(1, (level - 1) / 4);
-    const pool = [];
-    for (const k of KINDS) {
-      let w = k.weight;
-      if (k.sizeMul < 1) w += 2 * (1 - lvlBias);
-      if (k.sizeMul > 1.5) w += 2 * lvlBias;
-      for (let i = 0; i < Math.max(1, Math.round(w)); i++) pool.push(k);
-    }
-    return pick(pool);
-  }
-
-  function spawnFish() {
-    const def = weightedKind();
-    const fromLeft = Math.random() < 0.5;
-    const size = def.sizeMul * (12 + level * 1.5 + rand(0, 4));
-    const speed = rand(25, 55 + level * 8);
-    const y = rand(PLAY.y + 20, PLAY.y + PLAY.h - 55);
-    return {
-      x: fromLeft ? PLAY.x - size * 2 : PLAY.x + PLAY.w + size * 2,
-      y,
-      vx: fromLeft ? Math.abs(speed) : -Math.abs(speed),
-      vy: rand(-12, 12),
-      size,
-      facing: fromLeft ? 1 : -1,
-      kind: def.kind,
-      score: def.score,
-      wobble: rand(0, Math.PI * 2),
-    };
-  }
-
-  function ensureFish() {
-    const ramp = Math.min(1, playTime / 2.5);
-    const target = Math.max(2, Math.floor((5 + level * 2) * (0.35 + 0.65 * ramp)));
-    while (fish.length < target) fish.push(spawnFish());
-  }
+  let won = false;
 
   function startGame() {
     mode = "play";
@@ -974,14 +1012,14 @@
     level = 1;
     timeSec = 0;
     playTime = 0;
-    invuln = 1.5;
+    invuln = 0;
     growFlash = 0;
     popups = [];
-    fish = [];
     player = makePlayer();
+    fish = makeNpcSlots(player.f_size);
     deathFish = null;
     shake = 0;
-    ensureFish();
+    won = false;
   }
 
   // ─── Input ───────────────────────────────────────────────
@@ -993,7 +1031,7 @@
     }
     if (mode === "title" && (e.code === "Enter" || e.code === "Space")) startGame();
     if (mode === "help" && (e.code === "Enter" || e.code === "Space" || e.code === "Escape")) mode = "title";
-    if (mode === "over" && (e.code === "Enter" || e.code === "Space")) startGame();
+    if ((mode === "over" || mode === "win") && (e.code === "Enter" || e.code === "Space")) startGame();
   });
   window.addEventListener("keyup", (e) => {
     keys[e.code] = false;
@@ -1026,7 +1064,7 @@
     } else if (mode === "help") {
       btnHover = (p.x > W - 90 && p.y > H - 90) ? "next" : null;
       canvas.style.cursor = btnHover ? "pointer" : "default";
-    } else if (mode === "over") {
+    } else if (mode === "over" || mode === "win") {
       btnHover = (p.x > W / 2 - 70 && p.x < W / 2 + 70 && p.y > H * 0.62 && p.y < H * 0.62 + 44) ? "retry" : null;
       canvas.style.cursor = btnHover ? "pointer" : "default";
     } else {
@@ -1060,12 +1098,12 @@
       else if (hitStarBtn(p, W * 0.65, H * 0.48)) mode = "help";
     } else if (mode === "help") {
       mode = "title";
-    } else if (mode === "over") {
+    } else if (mode === "over" || mode === "win") {
       if (p.x > W / 2 - 70 && p.x < W / 2 + 70 && p.y > H * 0.62 && p.y < H * 0.62 + 44) startGame();
     }
   }
 
-  // ─── Update ──────────────────────────────────────────────
+  // ─── Update (SWF enterFrame model @ 30fps, integrated with dt) ──
   function update(dt) {
     for (const b of bubbles) {
       b.y += b.vy * dt;
@@ -1073,7 +1111,7 @@
     }
 
     if (mode !== "play" || !player) {
-      if (mode === "over" && deathFish) {
+      if ((mode === "over" || mode === "win") && deathFish) {
         deathFish.y += Math.sin(performance.now() / 400) * 0.15;
       }
       return;
@@ -1085,112 +1123,147 @@
     growFlash = Math.max(0, growFlash - dt);
     shake = Math.max(0, shake - dt);
 
-    const newLevel = 1 + Math.floor(score / 5000) + Math.floor(playTime / 50);
-    if (newLevel > level) level = Math.min(8, newLevel);
+    // How many Flash frames elapsed this tick
+    let frames = dt * SWF.FPS;
+    if (frames > 3) frames = 3; // avoid spiral on tab-switch
 
-    // Snappier accel; when keyboard held, disable pointer-follow entirely
-    const accel = 480 + level * 12;
-    const maxSpd = 185 + level * 12;
-    const friction = 4.6;
-    let ax = 0, ay = 0;
-    if (keys.ArrowLeft || keys.KeyA) ax -= 1;
-    if (keys.ArrowRight || keys.KeyD) ax += 1;
-    if (keys.ArrowUp || keys.KeyW) ay -= 1;
-    if (keys.ArrowDown || keys.KeyS) ay += 1;
+    const left = keys.ArrowLeft || keys.KeyA;
+    const right = keys.ArrowRight || keys.KeyD;
+    const up = keys.ArrowUp || keys.KeyW;
+    const down = keys.ArrowDown || keys.KeyS;
+    const turbo = keys.ShiftLeft || keys.ShiftRight;
+    const usingKbd = left || right || up || down || kbdActive;
 
-    const usingKbd = ax !== 0 || ay !== 0 || kbdActive;
+    // Optional pointer/touch steer (not in SWF; kept for phone) — inject as virtual arrows
+    let pLeft = false, pRight = false, pUp = false, pDown = false;
     if (!usingKbd && pointer) {
-      if (pointerDown) {
-        const dx = pointer.x - player.x;
-        const dy = pointer.y - player.y;
-        const d = Math.hypot(dx, dy);
-        if (d > 8) { ax = dx / d; ay = dy / d; }
-      } else if (
+      const want = (pointerDown) || (
         pointer.x > PLAY.x && pointer.x < PLAY.x + PLAY.w &&
         pointer.y > PLAY.y && pointer.y < PLAY.y + PLAY.h
-      ) {
-        const dx = pointer.x - player.x;
-        const dy = pointer.y - player.y;
-        const d = Math.hypot(dx, dy);
-        if (d > 24) { ax = (dx / d) * 0.9; ay = (dy / d) * 0.9; }
-      }
-    }
-
-    if (ax !== 0 || ay !== 0) {
-      const len = Math.hypot(ax, ay) || 1;
-      ax /= len; ay /= len;
-      player.vx += ax * accel * dt;
-      player.vy += ay * accel * dt;
-    } else {
-      player.vx -= player.vx * friction * dt;
-      player.vy -= player.vy * friction * dt;
-    }
-    const spd = Math.hypot(player.vx, player.vy);
-    if (spd > maxSpd) {
-      player.vx = (player.vx / spd) * maxSpd;
-      player.vy = (player.vy / spd) * maxSpd;
-    }
-    player.x += player.vx * dt;
-    player.y += player.vy * dt;
-    if (Math.abs(player.vx) > 8) player.facing = player.vx > 0 ? 1 : -1;
-    player.wobble += dt * 8;
-
-    if (player.x < PLAY.x - player.size) player.x = PLAY.x + PLAY.w + player.size;
-    if (player.x > PLAY.x + PLAY.w + player.size) player.x = PLAY.x - player.size;
-    player.y = clamp(player.y, PLAY.y + player.size * 0.5, PLAY.y + PLAY.h - 48 - player.size * 0.3);
-
-    player.size = playerBaseSize() + (growFlash > 0 ? 2 : 0);
-
-    ensureFish();
-    for (const f of fish) {
-      f.x += f.vx * dt;
-      f.y += f.vy * dt;
-      f.wobble += dt * 5;
-      f.facing = f.vx >= 0 ? 1 : -1;
-      f.vy += Math.sin(f.wobble) * 4 * dt;
-      f.vy = clamp(f.vy, -30, 30);
-      f.y = clamp(f.y, PLAY.y + 15, PLAY.y + PLAY.h - 50);
-    }
-    fish = fish.filter((f) => f.x > PLAY.x - 80 && f.x < PLAY.x + PLAY.w + 80);
-
-    for (let i = fish.length - 1; i >= 0; i--) {
-      const f = fish[i];
-      const d = dist(player, f);
-      const sum = player.size * 0.85 + f.size * 0.85;
-      if (d >= sum) continue;
-
-      const ratio = player.size / f.size;
-      if (ratio > 1.12) {
-        const pts = Math.round(f.score * (1 + (level - 1) * 0.15));
-        score += pts;
-        popups.push({ x: f.x, y: f.y, text: "+" + pts, life: 0.9, vy: -40 });
-        fish.splice(i, 1);
-        growFlash = 0.35;
-        player.size += 1.5;
-      } else if (ratio < 0.88) {
-        if (invuln <= 0) {
-          lives -= 1;
-          invuln = 2.0;
-          shake = 0.4;
-          fish.splice(i, 1);
-          if (lives <= 0) {
-            deathFish = { x: PLAY.x + PLAY.w - 40, y: PLAY.y + PLAY.h * 0.4, size: player.size };
-            mode = "over";
-          } else {
-            player.x = PLAY.x + PLAY.w * 0.4;
-            player.y = PLAY.y + PLAY.h * 0.35;
-            player.vx = 0; player.vy = 0;
+      );
+      if (want) {
+        const tx = toSwfX(pointer.x), ty = toSwfY(pointer.y);
+        const dx = tx - player.x, dy = ty - player.y;
+        const dead = pointerDown ? 6 : 14;
+        if (Math.hypot(dx, dy) > dead) {
+          if (Math.abs(dx) >= Math.abs(dy) * 0.35) {
+            if (dx < 0) pLeft = true; else pRight = true;
+          }
+          if (Math.abs(dy) >= Math.abs(dx) * 0.35) {
+            if (dy < 0) pUp = true; else pDown = true;
           }
         }
-      } else {
-        const nx = (player.x - f.x) / (d || 1);
-        const ny = (player.y - f.y) / (d || 1);
-        player.vx += nx * 80;
-        player.vy += ny * 80;
-        f.vx -= nx * 60;
-        f.vy -= ny * 40;
       }
     }
+
+    const goL = left || pLeft;
+    const goR = right || pRight;
+    const goU = up || pUp;
+    const goD = down || pDown;
+
+    // Step in Flash-frame units (fractional OK)
+    const swim = turbo ? SWF.SWIM_TURBO : SWF.SWIM;
+    const dragPow = Math.pow(SWF.DRAG, frames);
+
+    player.xmove *= dragPow;
+    player.ymove *= dragPow;
+
+    if (goL) {
+      player.facing = -1;
+      player.xmove -= swim * frames;
+    }
+    if (goR) {
+      player.facing = 1;
+      player.xmove += swim * frames;
+    }
+    if (goU) player.ymove -= swim * frames;
+    if (goD) player.ymove += swim * frames;
+
+    player.x += player.xmove * frames;
+    // Horizontal wrap (SWF 80 ↔ 450)
+    if (player.x > SWF.WRAP_R) player.x = SWF.WRAP_L;
+    if (player.x < SWF.WRAP_L) player.x = SWF.WRAP_R;
+
+    const nextY = player.y + player.ymove * frames;
+    if (nextY < SWF.Y_MAX && nextY > SWF.Y_MIN) player.y = nextY;
+    else player.ymove = 0;
+
+    player.size = scaleToPx(player.f_size) + (growFlash > 0 ? 2 : 0);
+    player.wobble += dt * 8;
+
+    // NPC move + respawn (10 fixed slots)
+    for (const f of fish) {
+      f.x += f.fishspeed * frames;
+      f.wobble += dt * 5;
+      f.facing = f.fishspeed >= 0 ? 1 : -1;
+      f.size = scaleToPx(f.fishsize);
+      if (f.x > 650 || f.x < -100) {
+        placeFishSlot(f, player.f_size);
+      }
+    }
+
+    // Collisions — SWF: eat iff f_size > fishsize; else life.reduce
+    const pSx = toScreenX(player.x);
+    const pSy = toScreenY(player.y);
+    const pR = player.size * 0.85;
+
+    for (const f of fish) {
+      const fSx = toScreenX(f.x);
+      const fSy = toScreenY(f.y);
+      const fR = f.size * 0.85;
+      const d = Math.hypot(pSx - fSx, pSy - fSy);
+      if (d >= pR + fR) continue;
+
+      if (player.f_size > f.fishsize) {
+        const bonus = (f.fishsize * 6) | 0;
+        score += bonus;
+        popups.push({
+          x: fSx, y: fSy,
+          text: "+" + bonus,
+          life: 0.9, vy: -40,
+        });
+        player.f_size += f.fishsize / 75;
+        player.size = scaleToPx(player.f_size);
+        growFlash = 0.35;
+        // Park offscreen like mc._x = 700; next loop respawns
+        f.x = 700;
+        f.fishspeed = 2;
+
+        if (player.f_size > SWF.F_WIN) {
+          won = true;
+          deathFish = {
+            x: toScreenX(player.x),
+            y: toScreenY(player.y),
+            size: player.size,
+          };
+          mode = "win";
+          break;
+        }
+      } else if (invuln <= 0) {
+        // Hurt (SWF has no invuln; brief remake grace so one overlap ≠ multi-hit)
+        lives -= 1;
+        invuln = 1.2;
+        shake = 0.4;
+        f.x = 700;
+        if (lives <= 0) {
+          deathFish = {
+            x: toScreenX(player.x),
+            y: toScreenY(player.y),
+            size: player.size,
+          };
+          mode = "over";
+          break;
+        }
+        // Soft reset position (SWF only plays hit anim / life icon)
+        player.x = 200;
+        player.y = 180;
+        player.xmove = 0;
+        player.ymove = 0;
+      }
+    }
+
+    // Rough level label from size (HUD only; SWF has no level var)
+    level = 1 + Math.min(9, ((player.f_size - SWF.F_SIZE0) / 25) | 0);
 
     for (const p of popups) {
       p.life -= dt;
@@ -1284,7 +1357,7 @@
     ctx.fillStyle = "#1a3a5c";
     ctx.font = "bold 15px Microsoft YaHei, PingFang SC, sans-serif";
     ctx.textAlign = "left";
-    ctx.fillText("比自己小的鱼可以吃掉", px + 40, py + 70);
+    ctx.fillText("体型严格更大才能吃掉（相等不行）", px + 40, py + 70);
 
     drawFishSprite(px + 80, py + 110, 22, 1, "player", false, 0);
     drawFishSprite(px + 140, py + 115, 12, -1, "pink", false, 0);
@@ -1311,7 +1384,7 @@
     ctx.fillStyle = "#1a3a5c";
     ctx.font = "12px Microsoft YaHei, sans-serif";
     ctx.textAlign = "left";
-    ctx.fillText("方向键 / WASD 游动，也可鼠标或触屏滑动", px + 250, py + 285);
+    ctx.fillText("方向键/WASD（惯性）· Shift加速 · 触屏跟随", px + 250, py + 285);
 
     ctx.beginPath();
     ctx.arc(W - 55, H - 55, 28, 0, Math.PI * 2);
@@ -1385,18 +1458,18 @@
     const all = fish.slice().sort((a, b) => a.y - b.y);
     for (const f of all) {
       if (f.y < (player ? player.y : 0)) {
-        drawFishSprite(f.x, f.y, f.size, f.facing, f.kind, false, f.wobble);
+        drawFishSprite(toScreenX(f.x), toScreenY(f.y), f.size, f.facing, f.kind, false, f.wobble);
       }
     }
     if (player) {
       const blink = invuln > 0 && Math.floor(invuln * 8) % 2 === 0;
       if (!blink) {
-        drawFishSprite(player.x, player.y, player.size, player.facing, "player", false, player.wobble);
+        drawFishSprite(toScreenX(player.x), toScreenY(player.y), player.size, player.facing, "player", false, player.wobble);
       }
     }
     for (const f of all) {
       if (f.y >= (player ? player.y : 0)) {
-        drawFishSprite(f.x, f.y, f.size, f.facing, f.kind, false, f.wobble);
+        drawFishSprite(toScreenX(f.x), toScreenY(f.y), f.size, f.facing, f.kind, false, f.wobble);
       }
     }
     ctx.restore();
@@ -1451,13 +1524,15 @@
     ctx.textAlign = "center";
     ctx.lineJoin = "round";
     // chunky black offset + orange outline
+    const title = (mode === "win") ? "CLEAR!" : "GAME OVER";
+    const outline = (mode === "win") ? "#2E7D32" : "#FF6D00";
     ctx.fillStyle = "#0A0A0A";
-    ctx.fillText("GAME OVER", W / 2 + 4, py + 74);
+    ctx.fillText(title, W / 2 + 4, py + 74);
     ctx.lineWidth = 8;
-    ctx.strokeStyle = "#FF6D00";
-    ctx.strokeText("GAME OVER", W / 2, py + 70);
+    ctx.strokeStyle = outline;
+    ctx.strokeText(title, W / 2, py + 70);
     ctx.fillStyle = "#FFFFFF";
-    ctx.fillText("GAME OVER", W / 2, py + 70);
+    ctx.fillText(title, W / 2, py + 70);
 
     const bx = W / 2 - 140, by = py + 110;
     roundRect(bx, by, 280, 48, 6);
@@ -1502,7 +1577,7 @@
     if (mode === "title") drawTitle();
     else if (mode === "help") drawHelp();
     else if (mode === "play") drawPlay();
-    else if (mode === "over") drawOver();
+    else if (mode === "over" || mode === "win") drawOver();
     requestAnimationFrame(frame);
   }
   if (location.hash === "#play") startGame();

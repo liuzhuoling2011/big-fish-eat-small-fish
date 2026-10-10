@@ -63,7 +63,7 @@
   window.addEventListener("resize", detectTouchUI);
   window.__bfQA = { over(){ deathFish = null; score = 12345; mode = "over"; }, play(){ startGame(); }, joy(){ joy.enabled = true; } };
 
-  let mode = "title"; // title | help | play | over | win
+  let mode = "loading"; // loading | title | help | play | over | win
   let score = 0;
   let lives = 3;
   let level = 1;
@@ -95,53 +95,62 @@
   window.addEventListener("resize", fitStage);
   fitStage();
 
-  // ─── Original SWF assets (FFDec / DefineSound extract) ───
+  // ─── Original SWF assets (WebP + phased load for slow nets) ───
+  const ASSET_VER = "v14";
   const ASSET = {
-    ready: false,
-    npc: [],   // [type1..8] each = Image[] swim frames
-    npcStill: [], // Image[8]
+    ready: false,       // title-critical ready
+    playReady: false,   // enough to start a round
+    deferReady: false,
+    loadProgress: 0,    // 0..1 overall-ish
+    loadLabel: "加载中…",
+    npc: [],
+    npcStill: [],
     player: { swim: [], chomp: [], hit: [], idle: null, chompStill: null, hurt: null },
-    sfx: {},       // HTMLAudioElement fallback / BGM
-    sfxBuf: {},    // WebAudio AudioBuffers (low-latency one-shots)
+    sfx: {},
+    sfxBuf: {},
     ui: {},
     seabed: {},
     digits: { score: [], timer: [], colon: null },
-    eatMc: { digits: [], bang: null }, // DefineSprite_25 + shape 14 !!
+    eatMc: { digits: [], bang: null },
   };
+
+  function assetUrl(path) {
+    const p = path.startsWith("assets/") ? path : ("assets/" + path);
+    return p + (p.includes("?") ? "&" : "?") + "v=" + ASSET_VER;
+  }
 
   function loadImage(src) {
     return new Promise((resolve) => {
       const im = new Image();
+      im.decoding = "async";
       im.onload = () => resolve(im);
       im.onerror = () => resolve(null);
-      im.src = src;
+      im.src = assetUrl(src);
     });
   }
 
   function loadAudio(src) {
-    const a = new Audio(src);
-    a.preload = "auto";
+    const a = new Audio(assetUrl(src));
+    a.preload = "none";
     a.crossOrigin = "anonymous";
     return a;
   }
 
-  // Web Audio for zero-latency SFX (HTMLAudio has decode/start lag on mobile)
   let audioCtx = null;
-  const SFX_URLS = {
+  // Core SFX only — gulps unused; BGM deferred
+  const SFX_CORE = {
     eat: "assets/sfx/Eat2.mp3",
-    eatAlt: "assets/sfx/_eat.mp3",
-    gulp0: "assets/sfx/gulp0.mp3",
-    gulp1: "assets/sfx/gulp1.mp3",
-    gulp2: "assets/sfx/gulp2.mp3",
-    gulp3: "assets/sfx/gulp3.mp3",
     bonk: "assets/sfx/bonk.mp3",
-    splash: "assets/sfx/_splash.wav",
+    splash: "assets/sfx/_splash.mp3",
     sploosh: "assets/sfx/_sploosh.mp3",
     flash: "assets/sfx/flash.mp3",
+  };
+  const SFX_DEFER = {
     win: "assets/sfx/gamewin.mp3",
     lose: "assets/sfx/gameLost.mp3",
     bgm: "assets/sfx/_koi.mp3",
   };
+  const SFX_URLS = Object.assign({}, SFX_CORE, SFX_DEFER);
 
   function ensureAudioCtx() {
     if (audioCtx) return audioCtx;
@@ -155,7 +164,7 @@
     try {
       const ctx = ensureAudioCtx();
       if (!ctx) return null;
-      const res = await fetch(url);
+      const res = await fetch(assetUrl(url));
       const ab = await res.arrayBuffer();
       const buf = await ctx.decodeAudioData(ab.slice(0));
       ASSET.sfxBuf[name] = buf;
@@ -165,107 +174,195 @@
     }
   }
 
-  async function loadAssets() {
-    const npcStill = [];
-    const npc = [];
-    for (let t = 1; t <= 8; t++) {
-      npcStill.push(await loadImage(`assets/fish/npc/${t}.png`));
-      const frames = [];
-      for (let f = 1; f <= 4; f++) {
-        frames.push(await loadImage(`assets/fish/npc/type${t}/${f}.png`));
-      }
-      npc.push(frames.filter(Boolean));
-    }
-    ASSET.npcStill = npcStill;
-    ASSET.npc = npc;
+  function sliceAtlas(atlasImg, frames) {
+    if (!atlasImg || !frames) return [];
+    return frames.map((f) => {
+      const c = document.createElement("canvas");
+      c.width = f.w;
+      c.height = f.h;
+      const cctx = c.getContext("2d");
+      cctx.drawImage(atlasImg, f.x, f.y, f.w, f.h, 0, 0, f.w, f.h);
+      return c;
+    });
+  }
 
-    const swim = [], chomp = [], hit = [];
-    for (let i = 1; i <= 6; i++) swim.push(await loadImage(`assets/fish/player/swim/${String(i).padStart(2,"0")}.png`));
-    for (let i = 1; i <= 7; i++) {
-      chomp.push(await loadImage(`assets/fish/player/chomp/${String(i).padStart(2,"0")}.png`));
-      hit.push(await loadImage(`assets/fish/player/hit/${String(i).padStart(2,"0")}.png`));
+  async function loadDigitAtlases() {
+    const [meta, scoreAtlas, timerAtlas, eatAtlas] = await Promise.all([
+      fetch(assetUrl("assets/ui/atlases/digits.json")).then((r) => r.json()).catch(() => null),
+      loadImage("assets/ui/atlases/score-digits.webp"),
+      loadImage("assets/ui/atlases/timer-digits.webp"),
+      loadImage("assets/ui/atlases/eat-digits.webp"),
+    ]);
+    if (meta && scoreAtlas) {
+      ASSET.digits.score = sliceAtlas(scoreAtlas, meta.score.frames);
     }
+    if (meta && timerAtlas) {
+      const frames = sliceAtlas(timerAtlas, meta.timer.frames);
+      ASSET.digits.timer = frames.slice(0, 10);
+      ASSET.digits.colon = frames[10] || null;
+    }
+    if (meta && eatAtlas) {
+      const frames = sliceAtlas(eatAtlas, meta.eat.frames);
+      ASSET.eatMc.digits = frames.slice(0, 10);
+      ASSET.eatMc.bang = frames[10] || null;
+    }
+  }
+
+  function setProgress(p, label) {
+    ASSET.loadProgress = clamp(p, 0, 1);
+    if (label) ASSET.loadLabel = label;
+  }
+
+  async function mapLimit(items, limit, fn) {
+    const out = new Array(items.length);
+    let i = 0;
+    async function worker() {
+      while (i < items.length) {
+        const idx = i++;
+        out[idx] = await fn(items[idx], idx);
+      }
+    }
+    const n = Math.min(limit, items.length) || 1;
+    await Promise.all(Array.from({ length: n }, worker));
+    return out;
+  }
+
+  async function loadImageMap(entries, concurrency = 6) {
+    const keys = Object.keys(entries);
+    const vals = await mapLimit(keys, concurrency, (k) => loadImage(entries[k]));
+    const out = {};
+    keys.forEach((k, i) => { out[k] = vals[i]; });
+    return out;
+  }
+
+  // Phase 1 — title screen only (few HTTP requests)
+  async function loadCritical() {
+    setProgress(0.05, "加载标题…");
+    const ui = await loadImageMap({
+      logo: "assets/ui/logo.webp",
+      btnStart: "assets/ui/btn-start-up.webp",
+      btnStartOver: "assets/ui/btn-start-over.webp",
+      btnHelp: "assets/ui/btn-help-up.webp",
+      btnHelpOver: "assets/ui/btn-help-over.webp",
+      goldFrame: "assets/ui/gold-frame.webp",
+      bgBubbles: "assets/ui/bg-bubbles.webp",
+    });
+    Object.assign(ASSET.ui, ui);
+    ASSET.seabed.stripTitle = await loadImage("assets/seabed/strip-title.webp");
+    setProgress(0.28, "标题就绪");
+    ASSET.ready = !!(ASSET.ui.logo || ASSET.ui.btnStart);
+  }
+
+  // Phase 2 — enough to play a round
+  async function loadPlayPack() {
+    setProgress(0.32, "加载游戏…");
+    const ui = await loadImageMap({
+      logoHud: "assets/ui/logo-hud.webp",
+      clock: "assets/ui/clock.webp",
+      scorePlaque: "assets/ui/score-plaque.webp",
+      lifeFish: "assets/ui/life-fish.webp",
+    });
+    Object.assign(ASSET.ui, ui);
+    ASSET.seabed.stripPlay = await loadImage("assets/seabed/strip-play.webp");
+    setProgress(0.42, "加载字体…");
+    await loadDigitAtlases();
+
+    setProgress(0.5, "加载小鱼…");
+    // Still frames = typeN/1 (deduped); animation frames deferred
+    const stills = await mapLimit([1,2,3,4,5,6,7,8], 4, (t) =>
+      loadImage(`assets/fish/npc/type${t}/1.webp`));
+    ASSET.npcStill = stills;
+    ASSET.npc = stills.map((im) => (im ? [im] : []));
+
+    setProgress(0.62, "加载玩家…");
+    const swim = await mapLimit([1,2,3,4,5,6], 4, (i) =>
+      loadImage(`assets/fish/player/swim/${String(i).padStart(2, "0")}.webp`));
     ASSET.player.swim = swim.filter(Boolean);
+    ASSET.player.idle = ASSET.player.swim[0] || null;
+
+    for (const [k, url] of Object.entries(SFX_CORE)) {
+      ASSET.sfx[k] = loadAudio(url);
+    }
+    // Decode eat ASAP after first gesture; prefetch buffers in background
+    for (const [k, url] of Object.entries(SFX_CORE)) {
+      decodeSfxBuffer(k, url);
+    }
+
+    setProgress(0.78, "即将开始");
+    ASSET.playReady = !!(ASSET.player.idle || ASSET.npcStill.some(Boolean));
+  }
+
+  // Phase 3 — polish / help / game-over / anim frames / BGM
+  async function loadDeferred() {
+    setProgress(0.82, "加载动画…");
+    const chomp = await mapLimit([1,2,3,4,5,6,7], 4, (i) =>
+      loadImage(`assets/fish/player/chomp/${String(i).padStart(2, "0")}.webp`));
+    const hit = await mapLimit([1,2,3,4,5,6,7], 4, (i) =>
+      loadImage(`assets/fish/player/hit/${String(i).padStart(2, "0")}.webp`));
     ASSET.player.chomp = chomp.filter(Boolean);
     ASSET.player.hit = hit.filter(Boolean);
-    ASSET.player.idle = await loadImage("assets/fish/player/idle.png");
-    ASSET.player.chompStill = await loadImage("assets/fish/player/chomp.png");
-    ASSET.player.hurt = await loadImage("assets/fish/player/hurt.png");
+    ASSET.player.chompStill = ASSET.player.chomp[0] || null;
+    ASSET.player.hurt = ASSET.player.hit[4] || ASSET.player.hit[0] || null;
 
-    for (const [k, url] of Object.entries(SFX_URLS)) {
+    // Fill NPC swim cycles (frames 2–4)
+    await mapLimit([1,2,3,4,5,6,7,8], 3, async (t) => {
+      const more = await mapLimit([2,3,4], 3, (f) =>
+        loadImage(`assets/fish/npc/type${t}/${f}.webp`));
+      const base = ASSET.npc[t - 1] || [];
+      ASSET.npc[t - 1] = base.concat(more.filter(Boolean));
+    });
+
+    setProgress(0.92, "加载界面…");
+    const ui = await loadImageMap({
+      btnStartDown: "assets/ui/btn-start-down.webp",
+      btnHelpDown: "assets/ui/btn-help-down.webp",
+      btnNext: "assets/ui/btn-next.webp",
+      helpPanel: "assets/ui/help-panel.webp",
+      gameOver: "assets/ui/game-over.webp",
+      congratulation: "assets/ui/congratulation.webp",
+      gameoverScore: "assets/ui/gameover-score.webp",
+      gameoverLabel: "assets/ui/gameover-label.webp",
+    });
+    Object.assign(ASSET.ui, ui);
+
+    for (const [k, url] of Object.entries(SFX_DEFER)) {
       ASSET.sfx[k] = loadAudio(url);
     }
     if (ASSET.sfx.bgm) {
       ASSET.sfx.bgm.loop = true;
       ASSET.sfx.bgm.volume = 0.35;
     }
-    // Prefetch + decode AudioBuffers (may need gesture before ctx runs; retry in unlockAudio)
-    for (const [k, url] of Object.entries(SFX_URLS)) {
+    for (const [k, url] of Object.entries(SFX_DEFER)) {
       if (k === "bgm") continue;
       decodeSfxBuffer(k, url);
     }
 
-    // Original SWF chrome (FFDec shapes/sprites/buttons + frame crops)
-    const uiFiles = {
-      logo: "assets/ui/logo.png",
-      logoHud: "assets/ui/logo-hud.png",
-      btnStart: "assets/ui/btn-start.png",
-      btnStartOver: "assets/ui/btn-start-over.png",
-      btnStartDown: "assets/ui/btn-start-down.png",
-      btnHelp: "assets/ui/btn-help.png",
-      btnHelpOver: "assets/ui/btn-help-over.png",
-      btnHelpDown: "assets/ui/btn-help-down.png",
-      btnNext: "assets/ui/btn-next.png",
-      clock: "assets/ui/clock.png?v=2",
-      scorePlaque: "assets/ui/score-plaque.png",
-      lifeFish: "assets/ui/life-fish.png",
-      livesStack: "assets/ui/lives-stack.png",
-      goldFrame: "assets/ui/gold-frame.png",
-      helpPanel: "assets/ui/help-panel.png",
-      gameOver: "assets/ui/game-over.png",
-      congratulation: "assets/ui/congratulation.png",
-      gameoverScore: "assets/ui/gameover-score.png",
-      gameoverLabel: "assets/ui/gameover-label.png?v=2",
-      bgBubbles: "assets/ui/bg-bubbles.png",
-      bgWater: "assets/ui/bg-water.png",
-    };
-    for (const [k, srcPath] of Object.entries(uiFiles)) {
-      ASSET.ui[k] = await loadImage(srcPath);
-    }
-    const seabedFiles = {
-      stripTitle: "assets/seabed/strip-title.png",
-      stripPlay: "assets/seabed/strip-play.png",
-      crab: "assets/seabed/crab.png",
-      clam: "assets/seabed/clam.png",
-      anemone: "assets/seabed/anemone.png",
-      starfish: "assets/seabed/starfish.png",
-      coral: "assets/seabed/coral-spotted.png",
-      seaweedA: "assets/seabed/seaweed-a.png",
-      seaweedB: "assets/seabed/seaweed-b.png",
-      seaweedC: "assets/seabed/seaweed-c.png",
-      seaweedD: "assets/seabed/seaweed-d.png",
-    };
-    for (const [k, srcPath] of Object.entries(seabedFiles)) {
-      ASSET.seabed[k] = await loadImage(srcPath);
-    }
+    setProgress(1, "完成");
+    ASSET.deferReady = true;
+  }
 
-    // Bitmap digit fonts from SWF DefineSprite_384 (score) / _396 (timer)
-    ASSET.digits.score = [];
-    ASSET.digits.timer = [];
-    for (let d = 0; d <= 9; d++) {
-      ASSET.digits.score.push(await loadImage(`assets/ui/digits/score/${d}.png`));
-      ASSET.digits.timer.push(await loadImage(`assets/ui/digits/timer/${d}.png`));
-    }
-    ASSET.digits.colon = await loadImage("assets/ui/digits/timer/colon.png");
+  let _playPackPromise = null;
+  let _deferPromise = null;
 
-    // eat_mc popup: DefineSprite_25 digits 0–9 + shape 14 !!
-    ASSET.eatMc.digits = [];
-    for (let d = 0; d <= 9; d++) {
-      ASSET.eatMc.digits.push(await loadImage(`assets/ui/eat_mc/digits/${d}.png`));
+  async function loadAssets() {
+    mode = "loading";
+    try {
+      await loadCritical();
+      mode = "title";
+      _playPackPromise = loadPlayPack().then(() => {
+        _deferPromise = loadDeferred().catch(() => {});
+      });
+      await _playPackPromise;
+    } catch (err) {
+      console.warn("asset load", err);
+      ASSET.ready = true;
+      mode = "title";
     }
-    ASSET.eatMc.bang = await loadImage("assets/ui/eat_mc/bang.png");
+  }
 
-    ASSET.ready = ASSET.npcStill.some(Boolean) && ASSET.player.idle;
+  function ensurePlayAssets() {
+    if (ASSET.playReady) return Promise.resolve();
+    return _playPackPromise || loadPlayPack();
   }
 
   function playSfx(name, { volume = 1 } = {}) {
@@ -312,6 +409,7 @@
   }
 
   loadAssets();
+
 
 
   function initBubbles() {
@@ -1377,6 +1475,19 @@
   let won = false;
 
   function startGame() {
+    unlockAudio();
+    if (!ASSET.playReady) {
+      mode = "loading";
+      ASSET.loadLabel = "准备游戏…";
+      ensurePlayAssets().then(() => {
+        if (mode === "loading" || mode === "title") beginRound();
+      });
+      return;
+    }
+    beginRound();
+  }
+
+  function beginRound() {
     mode = "play";
     score = 0;
     lives = 3;
@@ -1606,7 +1717,14 @@
     unlockAudio();
     if (mode === "title") {
       if (hitStarBtn(p, W * 0.35, H * 0.52)) startGame();
-      else if (hitStarBtn(p, W * 0.65, H * 0.52)) mode = "help";
+      else if (hitStarBtn(p, W * 0.65, H * 0.52)) {
+        if (ASSET.ui.helpPanel) mode = "help";
+        else {
+          mode = "loading";
+          ASSET.loadLabel = "加载说明…";
+          (_deferPromise || loadDeferred()).then(() => { mode = "help"; });
+        }
+      }
     } else if (mode === "help") {
       mode = "title";
     } else if (mode === "over" || mode === "win") {
@@ -1856,6 +1974,46 @@
     drawKelp(565, baseY - 28, 1.85);
   }
 
+  function drawLoading() {
+    drawOuterBg();
+    // Soft underwater wash while assets stream in
+    if (ASSET.ui.bgBubbles) {
+      try { drawAsset(ASSET.ui.bgBubbles, 0, 0, W, H); } catch (_) {}
+    }
+    if (ASSET.ui.logo) {
+      drawAssetSized(ASSET.ui.logo, W / 2, H * 0.38, 420, 150);
+    } else {
+      ctx.fillStyle = "#FFE082";
+      ctx.font = "bold 36px Microsoft YaHei, sans-serif";
+      ctx.textAlign = "center";
+      ctx.fillText("꼬기꼬기", W / 2, H * 0.38);
+    }
+    const bw = 280, bh = 16;
+    const bx = (W - bw) / 2, by = H * 0.62;
+    roundRect(bx - 2, by - 2, bw + 4, bh + 4, 10);
+    ctx.fillStyle = "rgba(0,0,0,0.35)";
+    ctx.fill();
+    roundRect(bx, by, bw, bh, 8);
+    ctx.fillStyle = "rgba(255,255,255,0.2)";
+    ctx.fill();
+    const pw = Math.max(4, bw * (ASSET.loadProgress || 0));
+    roundRect(bx, by, pw, bh, 8);
+    const bar = ctx.createLinearGradient(bx, by, bx + bw, by);
+    bar.addColorStop(0, "#FFD54F");
+    bar.addColorStop(1, "#FF8C00");
+    ctx.fillStyle = bar;
+    ctx.fill();
+    ctx.fillStyle = "#fff";
+    ctx.font = "bold 16px Microsoft YaHei, sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "top";
+    ctx.fillText(ASSET.loadLabel || "加载中…", W / 2, by + bh + 12);
+    const pct = Math.round((ASSET.loadProgress || 0) * 100);
+    ctx.font = "13px Microsoft YaHei, sans-serif";
+    ctx.fillStyle = "rgba(255,255,255,0.75)";
+    ctx.fillText(pct + "%", W / 2, by + bh + 34);
+  }
+
   function drawTitle() {
     drawOuterBg();
     drawTitleSeabed();
@@ -2097,7 +2255,8 @@
     last = now;
     update(dt);
     ctx.clearRect(0, 0, W, H);
-    if (mode === "title") drawTitle();
+    if (mode === "loading") drawLoading();
+    else if (mode === "title") drawTitle();
     else if (mode === "help") drawHelp();
     else if (mode === "play") drawPlay();
     else if (mode === "over" || mode === "win") drawOver();

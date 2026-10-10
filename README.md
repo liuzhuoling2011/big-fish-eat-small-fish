@@ -1,11 +1,19 @@
-# 大鱼吃小鱼（꼬기꼬기）HTML5 remake
+# 大鱼吃小鱼（꼬기꼬기 HTML remake）
 
-Modern Canvas remake of the classic 4399 Flash game ([1876](https://www.4399.com/flash/1876_3.htm) / KeBi Kids **꼬기꼬기**).
+4399 Flash #1876 / KeBi Kids **꼬기꼬기** 的现代 HTML5 复刻。
 
-- **Play:** https://liuzhuoling2011.github.io/big-fish-eat-small-fish/
-- **Controls:** Arrow keys / WASD / touch·mouse follow; Shift turbo
-- **Goal:** Eat smaller fish, avoid bigger ones, grow past the win size
+- 试玩：https://liuzhuoling2011.github.io/big-fish-eat-small-fish/
+- 资源为 WebP + 分阶段加载（标题优先），适合慢网。
+- 触屏左下角虚拟摇杆；键鼠：方向键 / WASD。
 
-See [NOTES.md](NOTES.md) for SWF parity + HD asset pipeline.
+## 本地打开
 
-Assets extracted from the historic SWF via FFDec (shapes/sprites/sounds). Logical stage **640×480**; canvas is devicePixelRatio-aware for sharp retina displays.
+用任意静态服务器打开目录根（不要直接 `file://`，以免音频受限）：
+
+```bash
+python3 -m http.server 8080
+```
+
+## 资源
+
+`assets/` 下为压缩后的 WebP / MP3。原始 SWF 提取与调试截图在开发机 `qa/`（不部署）。

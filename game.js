@@ -35,6 +35,26 @@
   let pointerDown = false;
   let kbdActive = false; // arrow/WASD held → ignore pointer follow
 
+  // Virtual joystick (phone/tablet only) — bottom-left, transparent
+  const joy = {
+    enabled: false,
+    active: false,
+    touchId: null,
+    ox: 0, oy: 0,   // origin (canvas coords)
+    dx: 0, dy: 0,   // stick offset
+    baseR: 52,
+    stickR: 22,
+    maxD: 40,
+  };
+  function detectTouchUI() {
+    const coarse = window.matchMedia && window.matchMedia("(pointer: coarse)").matches;
+    const touchPts = (navigator.maxTouchPoints || 0) > 0;
+    const small = Math.min(window.innerWidth, window.innerHeight) < 900;
+    joy.enabled = !!(coarse || touchPts || ("ontouchstart" in window && small));
+  }
+  detectTouchUI();
+  window.addEventListener("resize", detectTouchUI);
+
   let mode = "title"; // title | help | play | over | win
   let score = 0;
   let lives = 3;
@@ -73,10 +93,12 @@
     npc: [],   // [type1..8] each = Image[] swim frames
     npcStill: [], // Image[8]
     player: { swim: [], chomp: [], hit: [], idle: null, chompStill: null, hurt: null },
-    sfx: {},
+    sfx: {},       // HTMLAudioElement fallback / BGM
+    sfxBuf: {},    // WebAudio AudioBuffers (low-latency one-shots)
     ui: {},
     seabed: {},
     digits: { score: [], timer: [], colon: null },
+    eatMc: { digits: [], bang: null }, // DefineSprite_25 + shape 14 !!
   };
 
   function loadImage(src) {
@@ -91,7 +113,48 @@
   function loadAudio(src) {
     const a = new Audio(src);
     a.preload = "auto";
+    a.crossOrigin = "anonymous";
     return a;
+  }
+
+  // Web Audio for zero-latency SFX (HTMLAudio has decode/start lag on mobile)
+  let audioCtx = null;
+  const SFX_URLS = {
+    eat: "assets/sfx/Eat2.mp3",
+    eatAlt: "assets/sfx/_eat.mp3",
+    gulp0: "assets/sfx/gulp0.mp3",
+    gulp1: "assets/sfx/gulp1.mp3",
+    gulp2: "assets/sfx/gulp2.mp3",
+    gulp3: "assets/sfx/gulp3.mp3",
+    bonk: "assets/sfx/bonk.mp3",
+    splash: "assets/sfx/_splash.wav",
+    sploosh: "assets/sfx/_sploosh.mp3",
+    flash: "assets/sfx/flash.mp3",
+    win: "assets/sfx/gamewin.mp3",
+    lose: "assets/sfx/gameLost.mp3",
+    bgm: "assets/sfx/_koi.mp3",
+  };
+
+  function ensureAudioCtx() {
+    if (audioCtx) return audioCtx;
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return null;
+    audioCtx = new AC();
+    return audioCtx;
+  }
+
+  async function decodeSfxBuffer(name, url) {
+    try {
+      const ctx = ensureAudioCtx();
+      if (!ctx) return null;
+      const res = await fetch(url);
+      const ab = await res.arrayBuffer();
+      const buf = await ctx.decodeAudioData(ab.slice(0));
+      ASSET.sfxBuf[name] = buf;
+      return buf;
+    } catch (_) {
+      return null;
+    }
   }
 
   async function loadAssets() {
@@ -121,27 +184,17 @@
     ASSET.player.chompStill = await loadImage("assets/fish/player/chomp.png");
     ASSET.player.hurt = await loadImage("assets/fish/player/hurt.png");
 
-    const names = {
-      eat: "assets/sfx/Eat2.mp3",
-      eatAlt: "assets/sfx/_eat.mp3",
-      gulp0: "assets/sfx/gulp0.mp3",
-      gulp1: "assets/sfx/gulp1.mp3",
-      gulp2: "assets/sfx/gulp2.mp3",
-      gulp3: "assets/sfx/gulp3.mp3",
-      bonk: "assets/sfx/bonk.mp3",
-      splash: "assets/sfx/_splash.wav",
-      sploosh: "assets/sfx/_sploosh.mp3",
-      flash: "assets/sfx/flash.mp3",
-      win: "assets/sfx/gamewin.mp3",
-      lose: "assets/sfx/gameLost.mp3",
-      bgm: "assets/sfx/_koi.mp3",
-    };
-    for (const [k, src] of Object.entries(names)) {
-      ASSET.sfx[k] = loadAudio(src);
+    for (const [k, url] of Object.entries(SFX_URLS)) {
+      ASSET.sfx[k] = loadAudio(url);
     }
     if (ASSET.sfx.bgm) {
       ASSET.sfx.bgm.loop = true;
       ASSET.sfx.bgm.volume = 0.35;
+    }
+    // Prefetch + decode AudioBuffers (may need gesture before ctx runs; retry in unlockAudio)
+    for (const [k, url] of Object.entries(SFX_URLS)) {
+      if (k === "bgm") continue;
+      decodeSfxBuffer(k, url);
     }
 
     // Original SWF chrome (FFDec shapes/sprites/buttons + frame crops)
@@ -196,29 +249,46 @@
     }
     ASSET.digits.colon = await loadImage("assets/ui/digits/timer/colon.png");
 
+    // eat_mc popup: DefineSprite_25 digits 0–9 + shape 14 !!
+    ASSET.eatMc.digits = [];
+    for (let d = 0; d <= 9; d++) {
+      ASSET.eatMc.digits.push(await loadImage(`assets/ui/eat_mc/digits/${d}.png`));
+    }
+    ASSET.eatMc.bang = await loadImage("assets/ui/eat_mc/bang.png");
+
     ASSET.ready = ASSET.npcStill.some(Boolean) && ASSET.player.idle;
   }
 
-  function playSfx(name, { volume = 1, restart = true } = {}) {
+  function playSfx(name, { volume = 1 } = {}) {
+    // Prefer WebAudio buffer (instant); fall back to cloned HTMLAudio
+    const buf = ASSET.sfxBuf[name];
+    const ctx = audioCtx || ensureAudioCtx();
+    if (buf && ctx) {
+      try {
+        if (ctx.state === "suspended") ctx.resume();
+        const src = ctx.createBufferSource();
+        src.buffer = buf;
+        const gain = ctx.createGain();
+        gain.gain.value = volume;
+        src.connect(gain);
+        gain.connect(ctx.destination);
+        src.start(0);
+        return;
+      } catch (_) {}
+    }
     const a = ASSET.sfx[name];
     if (!a) return;
     try {
-      if (restart) {
-        a.pause();
-        a.currentTime = 0;
-      }
-      a.volume = volume;
-      const p = a.play();
+      const node = a.cloneNode ? a.cloneNode(true) : a;
+      node.volume = volume;
+      const p = node.play();
       if (p && p.catch) p.catch(() => {});
     } catch (_) {}
   }
 
-  function playEatSfx(fishsize) {
-    // SWF: SFXburp.attachSound("eat2"); also has gulp0..3
-    playSfx("eat", { volume: 0.9 });
-    const g = fishsize < 20 ? "gulp0" : fishsize < 35 ? "gulp1" : fishsize < 55 ? "gulp2" : "gulp3";
-    // slight delay so burp/eat stacks like classic
-    setTimeout(() => playSfx(g, { volume: 0.7 }), 40);
+  function playEatSfx(/* fishsize */) {
+    // SWF: SFXburp.attachSound("eat2"); SFXburp.start() — immediate, no gulp delay
+    playSfx("eat", { volume: 1 });
   }
 
   function ensureBgm(on) {
@@ -347,6 +417,120 @@
       cx += dw + gap;
     }
     return cx;
+  }
+
+  /**
+   * SWF eat_mc popup — fish silhouette + bonus digits + !!
+   * Timeline (DefineSprite_54, 15f @30fps): rise y 30→-20, alpha 0→1 over ~8f, hold.
+   */
+  function eatMcSample(age) {
+    // Keyframes from FFDec SVG transforms / opacity on frames 1..9
+    const keys = [
+      { t: 0 / 30, y: 30, a: 0 },
+      { t: 1 / 30, y: 18.3, a: 0.231 },
+      { t: 2 / 30, y: 8.15, a: 0.435 },
+      { t: 3 / 30, y: -0.45, a: 0.608 },
+      { t: 4 / 30, y: -7.5, a: 0.749 },
+      { t: 5 / 30, y: -12.95, a: 0.859 },
+      { t: 6 / 30, y: -16.85, a: 0.937 },
+      { t: 7 / 30, y: -19.2, a: 0.984 },
+      { t: 8 / 30, y: -20, a: 1 },
+      { t: 14 / 30, y: -20, a: 1 },
+    ];
+    if (age <= 0) return keys[0];
+    for (let i = 1; i < keys.length; i++) {
+      if (age <= keys[i].t) {
+        const a0 = keys[i - 1], a1 = keys[i];
+        const u = (age - a0.t) / Math.max(1e-6, a1.t - a0.t);
+        return {
+          y: a0.y + (a1.y - a0.y) * u,
+          a: a0.a + (a1.a - a0.a) * u,
+        };
+      }
+    }
+    return keys[keys.length - 1];
+  }
+
+  function drawEatMc(p) {
+    const samp = eatMcSample(p.age || 0);
+    const cx = p.x;
+    const cy = p.y + samp.y * 0.85; // slight scale into playfield
+    ctx.save();
+    ctx.globalAlpha = clamp(samp.a, 0, 1);
+
+    const digH = 28;
+    const digits = String(p.bonus | 0);
+    const fonts = ASSET.eatMc.digits;
+    const bang = ASSET.eatMc.bang;
+    const gap = 1;
+
+    // Measure digit strip
+    let digW = 0;
+    const digImgs = [];
+    if (fonts && fonts.length) {
+      for (const ch of digits) {
+        const img = fonts[ch | 0];
+        if (!img) continue;
+        const dw = digH * (img.width / img.height);
+        digImgs.push({ img, dw });
+        digW += dw + gap;
+      }
+      if (digImgs.length) digW -= gap;
+    }
+
+    const bangH = 30;
+    const bangW = bang ? bangH * (bang.width / bang.height) : 22;
+    const fishH = 26;
+    let fishImg = null;
+    if (p.artType && ASSET.npcStill[p.artType - 1]) {
+      fishImg = ASSET.npcStill[p.artType - 1];
+    } else if (ASSET.npcStill[0]) {
+      fishImg = ASSET.npcStill[0];
+    }
+    const fishW = fishImg ? fishH * (fishImg.width / fishImg.height) : 32;
+
+    // Layout: [fish][digits][!!] centered on eat point (SWF: fish left, digits, bang)
+    const totalW = fishW + 6 + digW + 4 + bangW;
+    let x = cx - totalW / 2;
+    const midY = cy;
+
+    if (fishImg) {
+      ctx.drawImage(fishImg, x, midY - fishH / 2, fishW, fishH);
+    }
+    x += fishW + 6;
+
+    if (digImgs.length) {
+      for (const d of digImgs) {
+        ctx.drawImage(d.img, x, midY - digH / 2, d.dw, digH);
+        x += d.dw + gap;
+      }
+    } else {
+      // Fallback canvas text
+      ctx.font = "bold 22px Impact, Arial Black, sans-serif";
+      ctx.textAlign = "left";
+      ctx.textBaseline = "middle";
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = "#1a3a66";
+      ctx.strokeText(digits, x, midY);
+      ctx.fillStyle = "#E8F4FF";
+      ctx.fillText(digits, x, midY);
+      x += ctx.measureText(digits).width + 4;
+    }
+
+    if (bang) {
+      ctx.drawImage(bang, x + 2, midY - bangH / 2, bangW, bangH);
+    } else {
+      ctx.font = "bold 26px Impact, sans-serif";
+      ctx.fillStyle = "#FF8A00";
+      ctx.strokeStyle = "#3D1A00";
+      ctx.lineWidth = 3;
+      ctx.textAlign = "left";
+      ctx.textBaseline = "middle";
+      ctx.strokeText("!!", x + 2, midY);
+      ctx.fillText("!!", x + 2, midY);
+    }
+
+    ctx.restore();
   }
 
   // ─── Candy gold frame (original SWF shape, fallback vector) ──
@@ -1231,6 +1415,79 @@
     return { x: (cx - r.left) * sx, y: (cy - r.top) * sy };
   }
 
+  function canvasPosFromTouch(t) {
+    const r = canvas.getBoundingClientRect();
+    const sx = W / r.width, sy = H / r.height;
+    return { x: (t.clientX - r.left) * sx, y: (t.clientY - r.top) * sy };
+  }
+
+  /** Default joystick nest: bottom-left margin outside SCORE/UI */
+  function joyHome() {
+    return { x: 70, y: H - 78 };
+  }
+
+  function joyHit(p) {
+    const h = joyHome();
+    return Math.hypot(p.x - h.x, p.y - h.y) <= joy.baseR + 18;
+  }
+
+  function joySetFromPoint(p) {
+    const ox = joy.active ? joy.ox : joyHome().x;
+    const oy = joy.active ? joy.oy : joyHome().y;
+    let dx = p.x - ox, dy = p.y - oy;
+    const len = Math.hypot(dx, dy);
+    if (len > joy.maxD) {
+      dx = (dx / len) * joy.maxD;
+      dy = (dy / len) * joy.maxD;
+    }
+    joy.dx = dx;
+    joy.dy = dy;
+  }
+
+  function joyAxes() {
+    if (!joy.enabled || !joy.active) return { l: false, r: false, u: false, d: false };
+    const dead = 10;
+    return {
+      l: joy.dx < -dead,
+      r: joy.dx > dead,
+      u: joy.dy < -dead,
+      d: joy.dy > dead,
+    };
+  }
+
+  function drawJoystick() {
+    if (!joy.enabled || mode !== "play") return;
+    const home = joyHome();
+    const cx = joy.active ? joy.ox : home.x;
+    const cy = joy.active ? joy.oy : home.y;
+    const sx = cx + (joy.active ? joy.dx : 0);
+    const sy = cy + (joy.active ? joy.dy : 0);
+    ctx.save();
+    // Base ring
+    ctx.beginPath();
+    ctx.arc(cx, cy, joy.baseR, 0, Math.PI * 2);
+    ctx.fillStyle = "rgba(0,0,0,0.18)";
+    ctx.fill();
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = "rgba(255,255,255,0.28)";
+    ctx.stroke();
+    // Inner guide
+    ctx.beginPath();
+    ctx.arc(cx, cy, joy.maxD, 0, Math.PI * 2);
+    ctx.strokeStyle = "rgba(255,255,255,0.12)";
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    // Stick
+    ctx.beginPath();
+    ctx.arc(sx, sy, joy.stickR, 0, Math.PI * 2);
+    ctx.fillStyle = joy.active ? "rgba(255,220,80,0.45)" : "rgba(255,255,255,0.28)";
+    ctx.fill();
+    ctx.strokeStyle = "rgba(255,255,255,0.4)";
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    ctx.restore();
+  }
+
   function hitStarBtn(p, cx, cy) {
     return Math.hypot(p.x - cx, p.y - cy) < 60;
   }
@@ -1264,21 +1521,66 @@
 
   canvas.addEventListener("touchstart", (e) => {
     e.preventDefault();
-    pointerDown = true;
-    pointer = canvasPos(e);
-    handleClick(pointer);
+    unlockAudio();
+    for (const t of e.changedTouches) {
+      const p = canvasPosFromTouch(t);
+      if (mode === "play" && joy.enabled && !joy.active && (joyHit(p) || p.y > H * 0.55 && p.x < W * 0.42)) {
+        // Capture as joystick (bottom-left zone / nest)
+        joy.active = true;
+        joy.touchId = t.identifier;
+        const home = joyHome();
+        // Fixed nest origin so HUD stays clear; stick follows finger within maxD
+        joy.ox = home.x;
+        joy.oy = home.y;
+        joySetFromPoint(p);
+        continue;
+      }
+      pointerDown = true;
+      pointer = p;
+      handleClick(p);
+    }
   }, { passive: false });
   canvas.addEventListener("touchmove", (e) => {
     e.preventDefault();
-    pointer = canvasPos(e);
+    for (const t of e.changedTouches) {
+      const p = canvasPosFromTouch(t);
+      if (joy.active && t.identifier === joy.touchId) {
+        joySetFromPoint(p);
+        continue;
+      }
+      pointer = p;
+    }
   }, { passive: false });
-  canvas.addEventListener("touchend", () => { pointerDown = false; pointer = null; });
+  function endJoyTouch(e) {
+    for (const t of e.changedTouches) {
+      if (joy.active && t.identifier === joy.touchId) {
+        joy.active = false;
+        joy.touchId = null;
+        joy.dx = 0;
+        joy.dy = 0;
+      }
+    }
+    if (!e.touches || e.touches.length === 0) {
+      pointerDown = false;
+      pointer = null;
+    }
+  }
+  canvas.addEventListener("touchend", endJoyTouch);
+  canvas.addEventListener("touchcancel", endJoyTouch);
 
   let audioUnlocked = false;
   function unlockAudio() {
+    const ctx = ensureAudioCtx();
+    if (ctx && ctx.state === "suspended") {
+      ctx.resume().catch(() => {});
+    }
     if (audioUnlocked) return;
     audioUnlocked = true;
-    // Warm decode by playing muted snippets
+    // Decode any buffers that failed before gesture; warm HTMLAudio muted
+    for (const [k, url] of Object.entries(SFX_URLS)) {
+      if (k === "bgm") continue;
+      if (!ASSET.sfxBuf[k]) decodeSfxBuffer(k, url);
+    }
     for (const a of Object.values(ASSET.sfx)) {
       if (!a) continue;
       try {
@@ -1337,24 +1639,30 @@
     const down = keys.ArrowDown || keys.KeyS;
     const turbo = keys.ShiftLeft || keys.ShiftRight;
     const usingKbd = left || right || up || down || kbdActive;
+    const jx = joyAxes();
 
-    // Optional pointer/touch steer (not in SWF; kept for phone) — inject as virtual arrows
+    // Touch: virtual joystick is primary; pointer-follow only if joy idle
     let pLeft = false, pRight = false, pUp = false, pDown = false;
-    if (!usingKbd && pointer) {
-      const want = (pointerDown) || (
-        pointer.x > PLAY.x && pointer.x < PLAY.x + PLAY.w &&
-        pointer.y > PLAY.y && pointer.y < PLAY.y + PLAY.h
-      );
-      if (want) {
-        const tx = toSwfX(pointer.x), ty = toSwfY(pointer.y);
-        const dx = tx - player.x, dy = ty - player.y;
-        const dead = pointerDown ? 6 : 14;
-        if (Math.hypot(dx, dy) > dead) {
-          if (Math.abs(dx) >= Math.abs(dy) * 0.35) {
-            if (dx < 0) pLeft = true; else pRight = true;
-          }
-          if (Math.abs(dy) >= Math.abs(dx) * 0.35) {
-            if (dy < 0) pUp = true; else pDown = true;
+    if (!usingKbd) {
+      if (joy.enabled && joy.active) {
+        pLeft = jx.l; pRight = jx.r; pUp = jx.u; pDown = jx.d;
+      } else if (pointer && !joy.enabled) {
+        // Desktop mouse follow only (phones use joystick)
+        const want = (pointerDown) || (
+          pointer.x > PLAY.x && pointer.x < PLAY.x + PLAY.w &&
+          pointer.y > PLAY.y && pointer.y < PLAY.y + PLAY.h
+        );
+        if (want) {
+          const tx = toSwfX(pointer.x), ty = toSwfY(pointer.y);
+          const dx = tx - player.x, dy = ty - player.y;
+          const dead = pointerDown ? 6 : 14;
+          if (Math.hypot(dx, dy) > dead) {
+            if (Math.abs(dx) >= Math.abs(dy) * 0.35) {
+              if (dx < 0) pLeft = true; else pRight = true;
+            }
+            if (Math.abs(dy) >= Math.abs(dx) * 0.35) {
+              if (dy < 0) pUp = true; else pDown = true;
+            }
           }
         }
       }
@@ -1426,10 +1734,14 @@
       if (player.f_size > f.fishsize) {
         const bonus = (f.fishsize * 6) | 0;
         score += bonus;
+        // SWF eat_mc: 15 frames @30fps ≈ 0.5s, fade-in while rising
         popups.push({
-          x: fSx, y: fSy,
-          text: "+" + bonus,
-          life: 0.9, vy: -40,
+          x: toScreenX(player.x),
+          y: toScreenY(player.y),
+          bonus,
+          artType: f.artType,
+          age: 0,
+          life: 15 / SWF.FPS,
         });
         player.f_size += f.fishsize / 75;
         player.size = scaleToPx(player.f_size);
@@ -1484,8 +1796,8 @@
     level = 1 + Math.min(9, ((player.f_size - SWF.F_SIZE0) / 25) | 0);
 
     for (const p of popups) {
+      p.age = (p.age || 0) + dt;
       p.life -= dt;
-      p.y += p.vy * dt;
     }
     popups = popups.filter((p) => p.life > 0);
   }
@@ -1640,15 +1952,7 @@
     ctx.restore();
 
     for (const p of popups) {
-      ctx.globalAlpha = clamp(p.life * 1.4, 0, 1);
-      ctx.font = "bold 18px Microsoft YaHei, sans-serif";
-      ctx.textAlign = "center";
-      ctx.lineWidth = 3;
-      ctx.strokeStyle = "#3D1A00";
-      ctx.strokeText(p.text, p.x, p.y);
-      ctx.fillStyle = "#FFEE58";
-      ctx.fillText(p.text, p.x, p.y);
-      ctx.globalAlpha = 1;
+      drawEatMc(p);
     }
 
     ctx.restore();
@@ -1665,6 +1969,7 @@
     drawScorePlaque();
     drawTimeClock();
     drawLives();
+    drawJoystick();
   }
 
   function drawOver() {

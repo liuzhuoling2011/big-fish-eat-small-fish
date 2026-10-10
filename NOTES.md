@@ -3,31 +3,32 @@
 ## Phase 1 — pixel-faithful (vs `historical_20050731_7.swf`)
 
 Matched / improved:
-- **SCORE digits**: SWF `DefineSprite_384` frames 1–10 → bitmap font `assets/ui/digits/score/0–9.png` (no system font overlay).
+- **SCORE digits**: SWF `DefineSprite_384` frames 1–10 → bitmap font `assets/ui/digits/score/0–9.png`.
 - **TIME digits**: SWF `DefineSprite_396` 7-seg yellow digits + colon → `assets/ui/digits/timer/`.
-- **bg-bubbles**: SWF shape `300` bubble field extracted (blue fill cleared) and drawn behind chrome.
-- **Seabed strips**: lightened dark silhouettes + soft top alpha to remove hard seam; props kept.
-- **Gold frame**: FFDec SVG shape `337` with inner playfield punched transparent; screw corners preserved; border pad uses 22/422 ratio.
-- **SFX**: `bonk` on Y-bound clamp; `_sploosh` on final death before `gameLost`; `splash` on start; eat/gulp/flash unchanged.
-- **HUD logo / plaque / clock**: blank LCD bands on plaque/clock so live bitmap digits show; logo from `DefineSprite_353`.
+- **bg-bubbles**: SWF shape `300` bubble field.
+- **Seabed strips** + gold frame SVG shape `337`.
+- **eat_mc popup**: `DefineSprite_25` digits + shape `14` `!!` + eaten-fish still; timeline fade-in/rise matches 15f @30fps.
+- **SFX**: eat = `Eat2` only (SWF `SFXburp`), WebAudio buffers, leading silence trimmed; flash / splash / sploosh / win / lose.
 
 ## Phase 2 — HD / hi-DPI
 
-- Assets rebuilt at **3×** where possible: SVG→PNG via cairosvg (`export.zoom` alone did not enlarge sprite PNGs), else LANCZOS/NEAREST upscale of FFDec bitmaps.
-- Digit fonts: score = NEAREST 3× of SWF bitmaps (crisp pixels); timer = SVG raster 3×.
-- Canvas is **devicePixelRatio-aware** (`applyDpr`, cap 3): logical stage stays **640×480**, backbuffer is `640*dpr × 480*dpr`, CSS size unchanged; stage still letterboxed with CSS scale.
-- Draw calls use **logical on-screen sizes** so HD textures stay sharp when downscaled by the browser compositor.
+- Assets at **3×** (SVG→PNG via cairosvg where possible).
+- Canvas **devicePixelRatio-aware** (cap 3): logical 640×480.
+
+## Phase 3 — mobile feel
+
+- **Eat SFX latency**: Web Audio `AudioBuffer` one-shots (no HTMLAudio restart lag); unlock on first gesture; trimmed Eat2 leading silence; removed 40ms gulp `setTimeout`.
+- **Virtual joystick** (touch / coarse pointer / maxTouchPoints): semi-transparent nest at bottom-left in play mode; maps to same arrow accel as keyboard; does not cover SCORE/TIME HUD.
 
 ## Remaining gaps
 
-- Fish / seabed props are upscaled bitmaps, not full SVG redraws of every shape (outlines slightly softer than true vector at extreme zoom).
-- Title “대鱼吃小鱼” Chinese subtitle is remake-only (not in SWF).
-- Help panel still original Korean art + Chinese caption line.
-- Trail-bubble `bonk` in SWF fires on bubble wrap; remake maps bonk to Y clamp (clearer feedback).
-- Eat popup still canvas text (SWF `eat_mc` digit clips not wired).
+- Fish / seabed props are upscaled bitmaps, not full per-shape SVG redraws.
+- Title Chinese subtitle is remake-only.
+- Help panel still original Korean art + Chinese caption.
+- `eat_mc` fish uses NPC still (not exact `_currentframe` swim frame).
+- Trail-bubble `bonk` mapped to Y clamp.
 
 ## Sources
 
 - SWF: `/workspace/4399-1876/downloader-trial/results/historical_20050731_7.swf`
-- FFDec SVG: `/workspace/4399-1876/ffdec-svg`, sprites `/workspace/4399-1876/ffdec-sprite-svg`
-- Ruffle refs: `/workspace/ruffle-shots/`
+- FFDec SVG / sprites under `/workspace/4399-1876/`

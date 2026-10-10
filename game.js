@@ -42,18 +42,26 @@
     touchId: null,
     ox: 0, oy: 0,   // origin (canvas coords)
     dx: 0, dy: 0,   // stick offset
-    baseR: 52,
-    stickR: 22,
-    maxD: 40,
+    baseR: 80,
+    stickR: 32,
+    maxD: 60,
   };
   function detectTouchUI() {
     const coarse = window.matchMedia && window.matchMedia("(pointer: coarse)").matches;
     const touchPts = (navigator.maxTouchPoints || 0) > 0;
     const small = Math.min(window.innerWidth, window.innerHeight) < 900;
     joy.enabled = !!(coarse || touchPts || ("ontouchstart" in window && small));
+    // Scale with viewport: canvas logical 640 wide; on a small phone the canvas
+    // is shrunk, so grow the logical radius to keep ~75-90 CSS px on screen.
+    const cssW = (canvas.getBoundingClientRect().width || window.innerWidth) || 640;
+    const k = Math.max(1, Math.min(1.6, 420 / cssW * 1.0 + 0.55));
+    joy.baseR = Math.round(80 * k);
+    joy.stickR = Math.round(32 * k);
+    joy.maxD = Math.round(60 * k);
   }
   detectTouchUI();
   window.addEventListener("resize", detectTouchUI);
+  window.__bfQA = { over(){ deathFish = null; score = 12345; mode = "over"; }, play(){ startGame(); }, joy(){ joy.enabled = true; } };
 
   let mode = "title"; // title | help | play | over | win
   let score = 0;
@@ -208,7 +216,7 @@
       btnHelpOver: "assets/ui/btn-help-over.png",
       btnHelpDown: "assets/ui/btn-help-down.png",
       btnNext: "assets/ui/btn-next.png",
-      clock: "assets/ui/clock.png",
+      clock: "assets/ui/clock.png?v=2",
       scorePlaque: "assets/ui/score-plaque.png",
       lifeFish: "assets/ui/life-fish.png",
       livesStack: "assets/ui/lives-stack.png",
@@ -217,6 +225,7 @@
       gameOver: "assets/ui/game-over.png",
       congratulation: "assets/ui/congratulation.png",
       gameoverScore: "assets/ui/gameover-score.png",
+      gameoverLabel: "assets/ui/gameover-label.png?v=2",
       bgBubbles: "assets/ui/bg-bubbles.png",
       bgWater: "assets/ui/bg-water.png",
     };
@@ -1095,8 +1104,8 @@
       const w = 95, h = 99;
       const x = cx - w * 0.55, y = cy - h * 0.35;
       drawAsset(img, x, y, w, h);
-      const lcdW = w * 0.56, lcdH = h * 0.15;
-      const lcdX = x + w * 0.22, lcdY = y + h * 0.42;
+      const lcdW = w * 0.6, lcdH = h * 0.17;
+      const lcdX = x + w * 0.16, lcdY = y + h * 0.47;
       const fonts = ASSET.digits.timer;
       if (fonts && fonts[0]) {
         const digH = lcdH * 0.95;
@@ -1423,12 +1432,12 @@
 
   /** Default joystick nest: bottom-left margin outside SCORE/UI */
   function joyHome() {
-    return { x: 70, y: H - 78 };
+    return { x: joy.baseR + 14, y: H - joy.baseR - 14 };
   }
 
   function joyHit(p) {
     const h = joyHome();
-    return Math.hypot(p.x - h.x, p.y - h.y) <= joy.baseR + 18;
+    return Math.hypot(p.x - h.x, p.y - h.y) <= joy.baseR * 1.6;
   }
 
   function joySetFromPoint(p) {
@@ -1446,7 +1455,7 @@
 
   function joyAxes() {
     if (!joy.enabled || !joy.active) return { l: false, r: false, u: false, d: false };
-    const dead = 10;
+    const dead = joy.maxD * 0.2;
     return {
       l: joy.dx < -dead,
       r: joy.dx > dead,
@@ -1524,7 +1533,7 @@
     unlockAudio();
     for (const t of e.changedTouches) {
       const p = canvasPosFromTouch(t);
-      if (mode === "play" && joy.enabled && !joy.active && (joyHit(p) || p.y > H * 0.55 && p.x < W * 0.42)) {
+      if (mode === "play" && joy.enabled && !joy.active && (joyHit(p) || p.y > H * 0.45 && p.x < W * 0.5)) {
         // Capture as joystick (bottom-left zone / nest)
         joy.active = true;
         joy.touchId = t.identifier;
@@ -1722,14 +1731,39 @@
     // Collisions — SWF: eat iff f_size > fishsize; else life.reduce
     const pSx = toScreenX(player.x);
     const pSy = toScreenY(player.y);
-    const pR = player.size * 0.85;
+    // Body ellipses (exclude fins/tail padding). Sprite width ≈ 2.2×size,
+    // body ≈ 1.25×size half-width horizontally, 0.8×size vertically; body
+    // centre shifted toward the head (facing direction).
+    const pFace = player.facing || 1;
+    const pBx = pSx + pFace * player.size * 0.1;
+    const pA = player.size * 0.8, pB = player.size * 0.62;
+    const pts = [];
+    // SWF-style sample points on player outline (6 pts + centre)
+    for (let i = 0; i < 6; i++) {
+      const a = (i / 6) * Math.PI * 2;
+      pts.push([pBx + Math.cos(a) * pA, pSy + Math.sin(a) * pB]);
+    }
+    pts.push([pBx, pSy]);
 
     for (const f of fish) {
       const fSx = toScreenX(f.x);
       const fSy = toScreenY(f.y);
-      const fR = f.size * 0.85;
-      const d = Math.hypot(pSx - fSx, pSy - fSy);
-      if (d >= pR + fR) continue;
+      const fFace = f.facing || 1;
+      const fBx = fSx + fFace * f.size * 0.1;
+      const fA = f.size * 0.8, fB = f.size * 0.62;
+      if (Math.abs(pBx - fBx) > pA + fA || Math.abs(pSy - fSy) > pB + fB) continue;
+      // hitTest(x,y,true)-like: any player sample point inside the fish body,
+      // or the fish's centre inside player's body (small fish case)
+      let hit = false;
+      for (const [qx, qy] of pts) {
+        const ex = (qx - fBx) / fA, ey = (qy - fSy) / fB;
+        if (ex * ex + ey * ey < 1) { hit = true; break; }
+      }
+      if (!hit) {
+        const ex = (fBx - pBx) / pA, ey = (fSy - pSy) / pB;
+        hit = ex * ex + ey * ey < 1;
+      }
+      if (!hit) continue;
 
       if (player.f_size > f.fishsize) {
         const bonus = (f.fishsize * 6) | 0;
@@ -2015,11 +2049,11 @@
       const gh = gw * (gs.height / gs.width);
       const gx = W / 2 - gw / 2, gy = py + 120;
       drawAsset(gs, gx, gy, gw, gh);
-      const digitX = gx + gw * 0.28;
-      const digitW = gw * 0.70;
-      roundRect(digitX, gy + gh * 0.12, digitW, gh * 0.76, 3);
-      ctx.fillStyle = "#000";
+      // Original: orange 점수 tag + LCD digits on a dark-navy strip (no hard black slab)
+      roundRect(gx + gw * 0.27, gy + gh * 0.04, gw * 0.73, gh * 0.92, 8);
+      ctx.fillStyle = "rgba(10,30,70,0.85)";
       ctx.fill();
+      if (ASSET.ui.gameoverLabel) drawAsset(ASSET.ui.gameoverLabel, gx, gy, gw * (232 / 819), gh);
       const text = String(Math.min(score, 999999)).padStart(6, "0");
       const fonts = ASSET.digits.score;
       if (fonts && fonts[0]) {

@@ -52,6 +52,118 @@
   window.addEventListener("resize", fitStage);
   fitStage();
 
+  // ─── Original SWF assets (FFDec / DefineSound extract) ───
+  const ASSET = {
+    ready: false,
+    npc: [],   // [type1..8] each = Image[] swim frames
+    npcStill: [], // Image[8]
+    player: { swim: [], chomp: [], hit: [], idle: null, chompStill: null, hurt: null },
+    sfx: {},
+  };
+
+  function loadImage(src) {
+    return new Promise((resolve) => {
+      const im = new Image();
+      im.onload = () => resolve(im);
+      im.onerror = () => resolve(null);
+      im.src = src;
+    });
+  }
+
+  function loadAudio(src) {
+    const a = new Audio(src);
+    a.preload = "auto";
+    return a;
+  }
+
+  async function loadAssets() {
+    const npcStill = [];
+    const npc = [];
+    for (let t = 1; t <= 8; t++) {
+      npcStill.push(await loadImage(`assets/fish/npc/${t}.png`));
+      const frames = [];
+      for (let f = 1; f <= 4; f++) {
+        frames.push(await loadImage(`assets/fish/npc/type${t}/${f}.png`));
+      }
+      npc.push(frames.filter(Boolean));
+    }
+    ASSET.npcStill = npcStill;
+    ASSET.npc = npc;
+
+    const swim = [], chomp = [], hit = [];
+    for (let i = 1; i <= 6; i++) swim.push(await loadImage(`assets/fish/player/swim/${String(i).padStart(2,"0")}.png`));
+    for (let i = 1; i <= 7; i++) {
+      chomp.push(await loadImage(`assets/fish/player/chomp/${String(i).padStart(2,"0")}.png`));
+      hit.push(await loadImage(`assets/fish/player/hit/${String(i).padStart(2,"0")}.png`));
+    }
+    ASSET.player.swim = swim.filter(Boolean);
+    ASSET.player.chomp = chomp.filter(Boolean);
+    ASSET.player.hit = hit.filter(Boolean);
+    ASSET.player.idle = await loadImage("assets/fish/player/idle.png");
+    ASSET.player.chompStill = await loadImage("assets/fish/player/chomp.png");
+    ASSET.player.hurt = await loadImage("assets/fish/player/hurt.png");
+
+    const names = {
+      eat: "assets/sfx/Eat2.mp3",
+      eatAlt: "assets/sfx/_eat.mp3",
+      gulp0: "assets/sfx/gulp0.mp3",
+      gulp1: "assets/sfx/gulp1.mp3",
+      gulp2: "assets/sfx/gulp2.mp3",
+      gulp3: "assets/sfx/gulp3.mp3",
+      bonk: "assets/sfx/bonk.mp3",
+      splash: "assets/sfx/_splash.wav",
+      sploosh: "assets/sfx/_sploosh.mp3",
+      flash: "assets/sfx/flash.mp3",
+      win: "assets/sfx/gamewin.mp3",
+      lose: "assets/sfx/gameLost.mp3",
+      bgm: "assets/sfx/_koi.mp3",
+    };
+    for (const [k, src] of Object.entries(names)) {
+      ASSET.sfx[k] = loadAudio(src);
+    }
+    if (ASSET.sfx.bgm) {
+      ASSET.sfx.bgm.loop = true;
+      ASSET.sfx.bgm.volume = 0.35;
+    }
+    ASSET.ready = ASSET.npcStill.some(Boolean) && ASSET.player.idle;
+  }
+
+  function playSfx(name, { volume = 1, restart = true } = {}) {
+    const a = ASSET.sfx[name];
+    if (!a) return;
+    try {
+      if (restart) {
+        a.pause();
+        a.currentTime = 0;
+      }
+      a.volume = volume;
+      const p = a.play();
+      if (p && p.catch) p.catch(() => {});
+    } catch (_) {}
+  }
+
+  function playEatSfx(fishsize) {
+    // SWF: SFXburp.attachSound("eat2"); also has gulp0..3
+    playSfx("eat", { volume: 0.9 });
+    const g = fishsize < 20 ? "gulp0" : fishsize < 35 ? "gulp1" : fishsize < 55 ? "gulp2" : "gulp3";
+    // slight delay so burp/eat stacks like classic
+    setTimeout(() => playSfx(g, { volume: 0.7 }), 40);
+  }
+
+  function ensureBgm(on) {
+    const a = ASSET.sfx.bgm;
+    if (!a) return;
+    if (on) {
+      const p = a.play();
+      if (p && p.catch) p.catch(() => {});
+    } else {
+      a.pause();
+    }
+  }
+
+  loadAssets();
+
+
   function initBubbles() {
     bubbles = [];
     for (let i = 0; i < 32; i++) {
@@ -727,11 +839,59 @@
 
   function drawLives() {
     for (let i = 0; i < lives; i++) {
-      drawFishSprite(28, 100 + i * 52, 16, 1, "player", false, 0);
+      drawFishSprite(28, 100 + i * 52, 16, 1, "player", false, 0, { player: true });
     }
   }
 
-  // ─── Fish art (thicker outlines, distinct silhouettes) ────
+  // ─── Fish art (original SWF sprites via FFDec PNG) ────
+  // Frame 1..8 → art types; SWF can request 9..10 → clamp to 8
+  function artTypeForFrame(frame) {
+    return clamp(frame | 0, 1, 8);
+  }
+
+  function drawFishImage(img, x, y, size, facing, dead, wobble, alpha) {
+    if (!img) return false;
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.scale(facing < 0 ? -1 : 1, 1);
+    if (dead) ctx.rotate(Math.PI / 2);
+    if (wobble) ctx.rotate(Math.sin(wobble) * 0.06);
+    if (alpha != null && alpha < 1) ctx.globalAlpha = alpha;
+    // size ≈ Flash radius-ish; full sprite width ~2.2× that (body+tail)
+    const dw = Math.max(8, size * 2.2);
+    const dh = dw * (img.height / img.width);
+    ctx.drawImage(img, -dw * 0.55, -dh * 0.5, dw, dh);
+    ctx.restore();
+    return true;
+  }
+
+  function pickNpcFrame(artType, wobble) {
+    const frames = ASSET.npc[artType - 1];
+    if (frames && frames.length) {
+      const i = Math.floor(Math.abs(wobble) * 2.2) % frames.length;
+      return frames[i];
+    }
+    return ASSET.npcStill[artType - 1] || null;
+  }
+
+  function pickPlayerFrame(dead, chompT, hurtT, wobble) {
+    if (dead) return ASSET.player.hurt || ASSET.player.idle;
+    if (hurtT > 0 && ASSET.player.hit.length) {
+      const i = Math.min(ASSET.player.hit.length - 1, Math.floor((1.2 - Math.min(1.2, hurtT)) / 1.2 * ASSET.player.hit.length));
+      return ASSET.player.hit[Math.max(0, i)];
+    }
+    if (chompT > 0 && ASSET.player.chomp.length) {
+      const i = Math.min(ASSET.player.chomp.length - 1, Math.floor((0.35 - Math.min(0.35, chompT)) / 0.35 * ASSET.player.chomp.length));
+      return ASSET.player.chomp[Math.max(0, i)];
+    }
+    if (ASSET.player.swim.length) {
+      const i = Math.floor(Math.abs(wobble) * 3) % ASSET.player.swim.length;
+      return ASSET.player.swim[i];
+    }
+    return ASSET.player.idle;
+  }
+
+  // Fallback vector art if PNGs not ready
   function fishPalette(kind) {
     switch (kind) {
       case "player": return { body: "#FF8A00", belly: "#FFE8C8", fin: "#E65100", eye: "big", face: "happy" };
@@ -745,21 +905,34 @@
     }
   }
 
-  function drawFishSprite(x, y, size, facing, kind, dead, wobble) {
-    const p = fishPalette(kind);
+  const KIND_TO_ART = { tiny: 1, pink: 2, yellow: 6, blue: 4, green: 5, purple: 8, player: 0 };
+
+  function drawFishSprite(x, y, size, facing, kind, dead, wobble, opts) {
+    opts = opts || {};
+    const alpha = opts.alpha;
+    let img = null;
+    if (kind === "player" || opts.player) {
+      img = pickPlayerFrame(!!dead, opts.chompT || 0, opts.hurtT || 0, wobble || 0);
+    } else {
+      let art = opts.artType || KIND_TO_ART[kind] || 1;
+      art = clamp(art, 1, 8);
+      img = pickNpcFrame(art, wobble || 0);
+    }
+    if (drawFishImage(img, x, y, size, facing, dead, wobble, alpha)) return;
+
+    // vector fallback (pre-asset)
+    const p = fishPalette(kind === "player" ? "player" : (kind || "tiny"));
     ctx.save();
     ctx.translate(x, y);
     ctx.scale(facing, 1);
     if (dead) ctx.rotate(Math.PI / 2);
     if (wobble) ctx.rotate(Math.sin(wobble) * 0.08);
+    if (alpha != null && alpha < 1) ctx.globalAlpha = alpha;
     const s = size;
-    // Thicker even outlines
     ctx.lineWidth = Math.max(2.2, s * 0.12);
     ctx.strokeStyle = "#000";
     ctx.lineJoin = "round";
     ctx.lineCap = "round";
-
-    // Tail — more distinct fork
     ctx.fillStyle = p.fin;
     ctx.beginPath();
     ctx.moveTo(-s * 0.7, 0);
@@ -767,140 +940,16 @@
     ctx.quadraticCurveTo(-s * 1.05, 0, -s * 1.35, s * 0.5);
     ctx.closePath();
     ctx.fill(); ctx.stroke();
-
-    // Body — player slightly rounder / chubbier for ID
     const bw = kind === "player" ? s * 1.05 : s;
     const bh = kind === "player" ? s * 0.68 : s * 0.6;
     ctx.fillStyle = p.body;
     ctx.beginPath();
     ctx.ellipse(0, 0, bw, bh, 0, 0, Math.PI * 2);
     ctx.fill(); ctx.stroke();
-
-    // Belly
     ctx.fillStyle = p.belly;
     ctx.beginPath();
     ctx.ellipse(s * 0.1, s * 0.2, s * 0.55, s * 0.3, 0, 0, Math.PI * 2);
     ctx.fill();
-
-    // Dorsal fin with ribbing
-    ctx.fillStyle = p.fin;
-    ctx.beginPath();
-    ctx.moveTo(-s * 0.15, -bh * 0.85);
-    ctx.lineTo(s * 0.1, -s * 1.0);
-    ctx.lineTo(s * 0.4, -bh * 0.75);
-    ctx.closePath();
-    ctx.fill(); ctx.stroke();
-    ctx.beginPath();
-    ctx.moveTo(s * 0.05, -bh * 0.85);
-    ctx.lineTo(s * 0.12, -s * 0.92);
-    ctx.stroke();
-
-    // Side fin
-    ctx.beginPath();
-    ctx.moveTo(s * 0.0, s * 0.05);
-    ctx.lineTo(-s * 0.2, s * 0.55);
-    ctx.lineTo(s * 0.28, s * 0.32);
-    ctx.closePath();
-    ctx.fill(); ctx.stroke();
-
-    // Specular highlight
-    ctx.fillStyle = "rgba(255,255,255,0.4)";
-    ctx.beginPath();
-    ctx.ellipse(-s * 0.2, -s * 0.22, s * 0.32, s * 0.16, -0.4, 0, Math.PI * 2);
-    ctx.fill();
-
-    // Eye
-    const ex = s * 0.42, ey = -s * 0.06;
-    if (dead) {
-      ctx.strokeStyle = "#000";
-      ctx.lineWidth = Math.max(2.5, s * 0.12);
-      ctx.beginPath();
-      ctx.moveTo(ex - s * 0.18, ey - s * 0.18);
-      ctx.lineTo(ex + s * 0.18, ey + s * 0.18);
-      ctx.moveTo(ex + s * 0.18, ey - s * 0.18);
-      ctx.lineTo(ex - s * 0.18, ey + s * 0.18);
-      ctx.stroke();
-    } else {
-      const er = p.eye === "big" ? s * 0.32 : p.eye === "dot" ? s * 0.12 : s * 0.24;
-      ctx.fillStyle = "#fff";
-      ctx.strokeStyle = "#000";
-      ctx.lineWidth = Math.max(2, s * 0.1);
-      ctx.beginPath(); ctx.arc(ex, ey, er, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
-      if (p.eye === "half" || p.eye === "angry") {
-        ctx.fillStyle = p.body;
-        ctx.beginPath();
-        ctx.ellipse(ex, ey - er * 0.5, er * 1.05, er * 0.55, 0, Math.PI, 0);
-        ctx.fill();
-        if (p.eye === "angry") {
-          ctx.strokeStyle = "#000";
-          ctx.lineWidth = Math.max(2, s * 0.1);
-          ctx.beginPath();
-          ctx.moveTo(ex - er * 1.1, ey - er * 0.85);
-          ctx.lineTo(ex + er * 0.9, ey - er * 0.15);
-          ctx.stroke();
-        }
-      }
-      if (p.eye === "dot") {
-        // closed/peaceful line eye for tiny
-        ctx.strokeStyle = "#000";
-        ctx.lineWidth = Math.max(2, s * 0.1);
-        ctx.beginPath();
-        ctx.moveTo(ex - s * 0.12, ey);
-        ctx.lineTo(ex + s * 0.12, ey);
-        ctx.stroke();
-      } else {
-        ctx.fillStyle = "#000";
-        const pr = er * (p.eye === "big" ? 0.42 : 0.48);
-        ctx.beginPath(); ctx.arc(ex + er * 0.18, ey + er * 0.05, pr, 0, Math.PI * 2); ctx.fill();
-        ctx.fillStyle = "#fff";
-        ctx.beginPath(); ctx.arc(ex + er * 0.05, ey - er * 0.28, pr * 0.38, 0, Math.PI * 2); ctx.fill();
-      }
-    }
-
-    // Mouth
-    ctx.strokeStyle = "#000";
-    ctx.lineWidth = Math.max(2, s * 0.09);
-    const mx = s * 0.78, my = s * 0.18;
-    if (p.face === "teeth") {
-      ctx.fillStyle = "#fff";
-      ctx.beginPath();
-      ctx.moveTo(mx - s * 0.08, my - s * 0.1);
-      ctx.lineTo(mx + s * 0.22, my);
-      ctx.lineTo(mx - s * 0.08, my + s * 0.2);
-      ctx.closePath();
-      ctx.fill(); ctx.stroke();
-      ctx.beginPath();
-      ctx.moveTo(mx + s * 0.02, my - s * 0.02);
-      ctx.lineTo(mx + s * 0.02, my + s * 0.12);
-      ctx.stroke();
-    } else if (p.face === "grumpy") {
-      ctx.beginPath();
-      ctx.arc(mx, my + s * 0.1, s * 0.14, Math.PI * 1.1, Math.PI * 1.9);
-      ctx.stroke();
-    } else if (p.face === "sleepy" || p.face === "smug") {
-      ctx.fillStyle = "#8D6E63";
-      ctx.beginPath();
-      ctx.ellipse(mx + s * 0.02, my, s * 0.08, s * 0.06, 0, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.stroke();
-    } else if (p.face === "happy") {
-      // open surprised/happy mouth + bubbles cue for player
-      ctx.beginPath();
-      ctx.arc(mx, my, s * 0.1, 0, Math.PI * 2);
-      ctx.fillStyle = "#4A2010";
-      ctx.fill();
-      ctx.stroke();
-      if (kind === "player" && s > 10) {
-        ctx.fillStyle = "rgba(255,255,255,0.7)";
-        ctx.beginPath(); ctx.arc(mx + s * 0.25, my - s * 0.35, s * 0.08, 0, Math.PI * 2); ctx.fill();
-        ctx.beginPath(); ctx.arc(mx + s * 0.38, my - s * 0.55, s * 0.05, 0, Math.PI * 2); ctx.fill();
-      }
-    } else {
-      ctx.beginPath();
-      ctx.arc(mx, my, s * 0.08, 0, Math.PI);
-      ctx.stroke();
-    }
-
     ctx.restore();
   }
 
@@ -924,10 +973,10 @@
     SPAWN_YH: 240,
   };
 
-  // Flash fish frame (1..10) → remake palette kind
+  // Flash fish frame (1..10) → art type (8 SWF looks; 9–10 clamp)
   const FRAME_KIND = [
-    "tiny", "tiny", "pink", "pink", "yellow",
-    "blue", "green", "purple", "purple", "purple",
+    "tiny", "pink", "red", "blue", "green",
+    "yellow", "navy", "purple", "purple", "purple",
   ];
 
   function toScreenX(x) { return PLAY.x + (x / SWF.W) * PLAY.w; }
@@ -970,6 +1019,7 @@
     slot.fishsize = fishsize;
     slot.fishspeed = fishspeed;
     slot.frame = frame;
+    slot.artType = artTypeForFrame(frame);
     slot.kind = kindForFrame(frame);
     slot.x = fromLeft ? -90 : 640;
     slot.y = SWF.SPAWN_Y0 + ((Math.random() * SWF.SPAWN_YH) | 0);
@@ -1016,10 +1066,14 @@
     growFlash = 0;
     popups = [];
     player = makePlayer();
+    player.chompT = 0;
+    player.hurtT = 0;
     fish = makeNpcSlots(player.f_size);
     deathFish = null;
     shake = 0;
     won = false;
+    playSfx("splash", { volume: 0.8 });
+    ensureBgm(true);
   }
 
   // ─── Input ───────────────────────────────────────────────
@@ -1029,7 +1083,7 @@
     if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "KeyW", "KeyA", "KeyS", "KeyD"].includes(e.code)) {
       kbdActive = true;
     }
-    if (mode === "title" && (e.code === "Enter" || e.code === "Space")) startGame();
+    if (mode === "title" && (e.code === "Enter" || e.code === "Space")) { unlockAudio(); startGame(); }
     if (mode === "help" && (e.code === "Enter" || e.code === "Space" || e.code === "Escape")) mode = "title";
     if ((mode === "over" || mode === "win") && (e.code === "Enter" || e.code === "Space")) startGame();
   });
@@ -1092,7 +1146,25 @@
   }, { passive: false });
   canvas.addEventListener("touchend", () => { pointerDown = false; pointer = null; });
 
+  let audioUnlocked = false;
+  function unlockAudio() {
+    if (audioUnlocked) return;
+    audioUnlocked = true;
+    // Warm decode by playing muted snippets
+    for (const a of Object.values(ASSET.sfx)) {
+      if (!a) continue;
+      try {
+        const wasVol = a.volume;
+        a.muted = true;
+        const p = a.play();
+        if (p && p.then) p.then(() => { a.pause(); a.currentTime = 0; a.muted = false; a.volume = wasVol; }).catch(() => { a.muted = false; });
+        else { a.pause(); a.currentTime = 0; a.muted = false; }
+      } catch (_) {}
+    }
+  }
+
   function handleClick(p) {
+    unlockAudio();
     if (mode === "title") {
       if (hitStarBtn(p, W * 0.35, H * 0.48)) startGame();
       else if (hitStarBtn(p, W * 0.65, H * 0.48)) mode = "help";
@@ -1122,6 +1194,10 @@
     invuln = Math.max(0, invuln - dt);
     growFlash = Math.max(0, growFlash - dt);
     shake = Math.max(0, shake - dt);
+    if (player) {
+      player.chompT = Math.max(0, (player.chompT || 0) - dt);
+      player.hurtT = Math.max(0, (player.hurtT || 0) - dt);
+    }
 
     // How many Flash frames elapsed this tick
     let frames = dt * SWF.FPS;
@@ -1225,6 +1301,8 @@
         player.f_size += f.fishsize / 75;
         player.size = scaleToPx(player.f_size);
         growFlash = 0.35;
+        player.chompT = 0.35;
+        playEatSfx(f.fishsize);
         // Park offscreen like mc._x = 700; next loop respawns
         f.x = 700;
         f.fishspeed = 2;
@@ -1237,13 +1315,17 @@
             size: player.size,
           };
           mode = "win";
+          ensureBgm(false);
+          playSfx("win", { volume: 0.85 });
           break;
         }
       } else if (invuln <= 0) {
         // Hurt (SWF has no invuln; brief remake grace so one overlap ≠ multi-hit)
         lives -= 1;
         invuln = 1.2;
+        player.hurtT = 1.2;
         shake = 0.4;
+        playSfx("flash", { volume: 0.75 });
         f.x = 700;
         if (lives <= 0) {
           deathFish = {
@@ -1252,6 +1334,8 @@
             size: player.size,
           };
           mode = "over";
+          ensureBgm(false);
+          playSfx("lose", { volume: 0.85 });
           break;
         }
         // Soft reset position (SWF only plays hit anim / life icon)
@@ -1359,13 +1443,13 @@
     ctx.textAlign = "left";
     ctx.fillText("体型严格更大才能吃掉（相等不行）", px + 40, py + 70);
 
-    drawFishSprite(px + 80, py + 110, 22, 1, "player", false, 0);
-    drawFishSprite(px + 140, py + 115, 12, -1, "pink", false, 0);
+    drawFishSprite(px + 80, py + 110, 22, 1, "player", false, 0, { player: true });
+    drawFishSprite(px + 140, py + 115, 12, -1, "pink", false, 0, { artType: 2 });
     drawSign(px + 200, py + 110, "O", "#E53935");
 
     ctx.fillText("比自己大的鱼要躲开，撞到会丢命", px + 40, py + 160);
-    drawFishSprite(px + 80, py + 205, 16, 1, "player", false, 0);
-    drawFishSprite(px + 160, py + 200, 32, -1, "purple", false, 0);
+    drawFishSprite(px + 80, py + 205, 16, 1, "player", false, 0, { player: true });
+    drawFishSprite(px + 160, py + 200, 32, -1, "purple", false, 0, { artType: 8 });
     drawSign(px + 230, py + 200, "X", "#E53935");
 
     roundRect(px + 40, py + 250, 70, 24, 10);
@@ -1458,18 +1542,18 @@
     const all = fish.slice().sort((a, b) => a.y - b.y);
     for (const f of all) {
       if (f.y < (player ? player.y : 0)) {
-        drawFishSprite(toScreenX(f.x), toScreenY(f.y), f.size, f.facing, f.kind, false, f.wobble);
+        drawFishSprite(toScreenX(f.x), toScreenY(f.y), f.size, f.facing, f.kind, false, f.wobble, { artType: f.artType });
       }
     }
     if (player) {
       const blink = invuln > 0 && Math.floor(invuln * 8) % 2 === 0;
       if (!blink) {
-        drawFishSprite(toScreenX(player.x), toScreenY(player.y), player.size, player.facing, "player", false, player.wobble);
+        drawFishSprite(toScreenX(player.x), toScreenY(player.y), player.size, player.facing, "player", false, player.wobble, { player: true, chompT: player.chompT, hurtT: player.hurtT });
       }
     }
     for (const f of all) {
       if (f.y >= (player ? player.y : 0)) {
-        drawFishSprite(toScreenX(f.x), toScreenY(f.y), f.size, f.facing, f.kind, false, f.wobble);
+        drawFishSprite(toScreenX(f.x), toScreenY(f.y), f.size, f.facing, f.kind, false, f.wobble, { artType: f.artType });
       }
     }
     ctx.restore();
@@ -1499,7 +1583,7 @@
     drawOuterBg();
     drawTitleSeabed();
     if (deathFish) {
-      drawFishSprite(deathFish.x, deathFish.y, deathFish.size || 18, 1, "player", true, 0);
+      drawFishSprite(deathFish.x, deathFish.y, deathFish.size || 18, 1, "player", true, 0, { player: true });
     }
     const px = 70, py = 70, pw = 500, ph = 280;
     roundRect(px - 2, py - 2, pw + 4, ph + 4, 18);

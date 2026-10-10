@@ -1,19 +1,20 @@
-# 大鱼吃小鱼 — 꼬기꼬기（HTML5 重制）
+# 大鱼吃小鱼（꼬기꼬기 HTML 复刻）
 
-按 4399 flash/1876 原版 Flash（KeBi Kids **꼬기꼬기**）画面与 HUD 用 Canvas 重制。
+基于 4399 Flash `1876` / KeBi Kids **꼬기꼬기** 的 HTML5 Canvas 重制版。
 
-玩法数值已从原版 SWF（CWS Flash 6 / AVM1）反汇编还原，详见仓库外分析笔记；核心公式：
+- 玩法与数值对齐原版 SWF（惯性、长大、得分、10 条鱼、通关 `f_size > 250`）
+- 鱼贴图与音效从原版 SWF 用 JPEXS FFDec / DefineSound 提取
+- 支持键盘方向键 / WASD、触屏跟随；Shift 加速
 
-- 玩家初始 `f_size = 15`，吃掉更小的鱼：`f_size += fishsize/75`，得分 `fishsize*6`
-- 敌鱼大小 `random(39+int(min(f_size,100)/3))+5`，速度 `(random(6)-3)*(1.1+min(f_size,150)/300)`
-- 惯性 `DRAG=0.93`，方向键加速度 `swimspeed=0.25`（Shift 加速 0.5）
-- `f_size > 250` 通关；3 条命
+## 在线玩
 
-## 打开方式
+https://liuzhuoling2011.github.io/big-fish-eat-small-fish/
 
-- GitHub Pages：https://liuzhuoling2011.github.io/big-fish-eat-small-fish/
-- 本地：打开 `index.html`，或 `python3 -m http.server`
+## 本地
 
-## 操作
+用任意静态服务器打开 `index.html`（需能加载 `assets/`）。
 
-方向键 / WASD 游动（原版手感）；触屏/鼠标跟随（手机）；Shift 加速。
+## 资源
+
+- `assets/fish/` — 玩家与 8 种 NPC 原版矢量栅格帧
+- `assets/sfx/` — `Eat2` / `gulp0–3` / `bonk` / `flash` / `gamewin` / `gameLost` / `_splash` / `_koi` 等

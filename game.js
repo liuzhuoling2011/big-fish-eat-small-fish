@@ -22,12 +22,15 @@
 
   // Gold frame — thicker candy border; lives in left outer margin
   const FX = 58, FY = 48, FW = 550, FH = 410;
-  const BORDER = 16; // candy gold thickness
+  // Match SWF shape 337 bevel (~22px on 422×303) so playfield = visible water
+  const FRAME_PAD_X = FW * (22 / 422);
+  const FRAME_PAD_Y = FH * (22 / 303);
+  const BORDER = FRAME_PAD_X; // horizontal pad; prefer FRAME_PAD_* for clips
   const PLAY = {
-    x: FX + BORDER,
-    y: FY + BORDER + 4,
-    w: FW - BORDER * 2,
-    h: FH - BORDER * 2 - 8,
+    x: FX + FRAME_PAD_X,
+    y: FY + FRAME_PAD_Y,
+    w: FW - FRAME_PAD_X * 2,
+    h: FH - FRAME_PAD_Y * 2,
   };
 
   const keys = Object.create(null);
@@ -36,6 +39,7 @@
   let kbdActive = false; // arrow/WASD held → ignore pointer follow
 
   let mode = "loading"; // loading | title | help | play | over | win
+  let paused = false;
 
   // Virtual joystick (phone/tablet) — HTML overlay in letterbox, NOT on canvas
   const joypad = document.getElementById("joypad");
@@ -133,7 +137,7 @@
   }
   function syncJoypadVisibility() {
     if (!joypad) return;
-    const show = joy.enabled && mode === "play";
+    const show = joy.enabled && mode === "play" && !paused;
     joypad.classList.toggle("on", show);
     joypad.setAttribute("aria-hidden", show ? "false" : "true");
     if (!show && joy.active) {
@@ -148,8 +152,10 @@
   window.addEventListener("orientationchange", () => setTimeout(detectTouchUI, 60));
   window.__bfQA = {
     over(){ deathFish = null; score = 12345; mode = "over"; syncJoypadVisibility(); },
+    win(){ deathFish = { x: 420, y: 320, size: 52 }; score = 105756; mode = "win"; syncJoypadVisibility(); },
     play(){ startGame(); },
     joy(){ joy.enabled = true; layoutJoypad(); },
+    pause(){ togglePause(); },
   };
 
   let score = 0;
@@ -584,6 +590,195 @@
     }
   }
 
+
+  // ─── Crisp calculator / 7-segment digits (vector, any DPR) ──
+  const SEG7 = {
+    "0": [1,1,1,1,1,1,0],
+    "1": [0,1,1,0,0,0,0],
+    "2": [1,1,0,1,1,0,1],
+    "3": [1,1,1,1,0,0,1],
+    "4": [0,1,1,0,0,1,1],
+    "5": [1,0,1,1,0,1,1],
+    "6": [1,0,1,1,1,1,1],
+    "7": [1,1,1,0,0,0,0],
+    "8": [1,1,1,1,1,1,1],
+    "9": [1,1,1,1,0,1,1],
+  };
+
+  function segPath(ctx, x, y, w, h, t) {
+    // Horizontal capsule
+    const r = t * 0.5;
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.lineTo(x + w - r, y);
+    ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+    ctx.lineTo(x + w, y + h - r);
+    ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+    ctx.lineTo(x + r, y + h);
+    ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+    ctx.lineTo(x, y + r);
+    ctx.quadraticCurveTo(x, y, x + r, y);
+    ctx.closePath();
+  }
+
+  function drawSevenSegDigit(ch, x, y, dw, dh, onColor, offColor) {
+    const bits = SEG7[ch];
+    if (!bits) return;
+    const t = Math.max(2.0, Math.min(dw, dh) * 0.20);
+    const gap = t * 0.35;
+    const ix = x + t * 0.55;
+    const iy = y + t * 0.55;
+    const iw = dw - t * 1.1;
+    const ih = dh - t * 1.1;
+    const midY = iy + ih * 0.5;
+    const segs = [
+      // a top
+      [ix + gap, iy, iw - gap * 2, t],
+      // b upper-right
+      [ix + iw - t, iy + gap, t, ih * 0.5 - gap * 1.2],
+      // c lower-right
+      [ix + iw - t, midY + gap * 0.4, t, ih * 0.5 - gap * 1.2],
+      // d bottom
+      [ix + gap, iy + ih - t, iw - gap * 2, t],
+      // e lower-left
+      [ix, midY + gap * 0.4, t, ih * 0.5 - gap * 1.2],
+      // f upper-left
+      [ix, iy + gap, t, ih * 0.5 - gap * 1.2],
+      // g middle
+      [ix + gap, midY - t * 0.5, iw - gap * 2, t],
+    ];
+    for (let i = 0; i < 7; i++) {
+      const [sx, sy, sw, sh] = segs[i];
+      if (sw <= 0 || sh <= 0) continue;
+      segPath(ctx, sx, sy, sw, sh, Math.min(sw, sh));
+      ctx.fillStyle = bits[i] ? onColor : (offColor || "rgba(255,255,255,0.0)");
+      ctx.fill();
+    }
+  }
+
+  function measureSevenSeg(text, digW, gap) {
+    let w = 0;
+    for (const ch of text) {
+      if (ch === ":") w += digW * 0.38 + gap * 0.4;
+      else if (ch >= "0" && ch <= "9") w += digW + gap;
+    }
+    return Math.max(0, w - gap);
+  }
+
+  /** Draw calculator-style digit string. Returns end x. */
+  function drawSevenSegString(text, x, y, digW, digH, gap, onColor, offColor) {
+    let cx = x;
+    for (const ch of text) {
+      if (ch === ":") {
+        const r = Math.max(1.2, digH * 0.09);
+        ctx.fillStyle = onColor;
+        ctx.beginPath(); ctx.arc(cx + digW * 0.16, y + digH * 0.32, r, 0, Math.PI * 2); ctx.fill();
+        ctx.beginPath(); ctx.arc(cx + digW * 0.16, y + digH * 0.68, r, 0, Math.PI * 2); ctx.fill();
+        cx += digW * 0.38 + gap * 0.4;
+        continue;
+      }
+      if (ch < "0" || ch > "9") continue;
+      drawSevenSegDigit(ch, cx, y, digW, digH, onColor, offColor);
+      cx += digW + gap;
+    }
+    return cx;
+  }
+
+  function drawLcdWell(x, y, w, h, radius) {
+    // Recessed plaque well — soft navy/brown, not a floating black slab
+    roundRect(x - 1, y - 1, w + 2, h + 2, (radius == null ? 4 : radius) + 1);
+    ctx.fillStyle = "rgba(40, 22, 0, 0.35)";
+    ctx.fill();
+    roundRect(x, y, w, h, radius == null ? 4 : radius);
+    const g = ctx.createLinearGradient(x, y, x, y + h);
+    g.addColorStop(0, "#2A1A0A");
+    g.addColorStop(0.5, "#1A1208");
+    g.addColorStop(1, "#120C06");
+    ctx.fillStyle = g;
+    ctx.fill();
+    ctx.strokeStyle = "rgba(255, 220, 120, 0.18)";
+    ctx.lineWidth = 1.2;
+    ctx.stroke();
+  }
+
+  // Pause control fused beside TIME clock (top-right)
+  function pauseBtnRect() {
+    const clockW = 95, clockH = 99;
+    const cx = FX + FW - 4;
+    const cy = FY + 8;
+    const x = cx - clockW * 0.55;
+    const y = cy - clockH * 0.35;
+    // Sit just left of clock, mid height
+    const bw = 34, bh = 34;
+    return { x: x - bw - 6, y: y + clockH * 0.38, w: bw, h: bh };
+  }
+
+  function hitPauseBtn(p) {
+    if (mode !== "play") return false;
+    const r = pauseBtnRect();
+    return p.x >= r.x && p.x <= r.x + r.w && p.y >= r.y && p.y <= r.y + r.h;
+  }
+
+  function togglePause() {
+    if (mode !== "play") return;
+    paused = !paused;
+    ensureBgm(!paused);
+    syncJoypadVisibility();
+  }
+
+  function drawPauseBtn() {
+    const r = pauseBtnRect();
+    ctx.save();
+    // Gold disc matching HUD chrome
+    ctx.beginPath();
+    ctx.arc(r.x + r.w / 2, r.y + r.h / 2, r.w / 2, 0, Math.PI * 2);
+    const g = ctx.createLinearGradient(r.x, r.y, r.x, r.y + r.h);
+    g.addColorStop(0, "#FFE456");
+    g.addColorStop(1, "#E0A000");
+    ctx.fillStyle = g;
+    ctx.fill();
+    ctx.lineWidth = 2.5;
+    ctx.strokeStyle = "#3D2200";
+    ctx.stroke();
+    ctx.fillStyle = "#3D2200";
+    const cx = r.x + r.w / 2, cy = r.y + r.h / 2;
+    if (paused) {
+      // play triangle
+      ctx.beginPath();
+      ctx.moveTo(cx - 5, cy - 8);
+      ctx.lineTo(cx - 5, cy + 8);
+      ctx.lineTo(cx + 9, cy);
+      ctx.closePath();
+      ctx.fill();
+    } else {
+      // pause bars
+      ctx.fillRect(cx - 7, cy - 8, 5, 16);
+      ctx.fillRect(cx + 2, cy - 8, 5, 16);
+    }
+    ctx.restore();
+  }
+
+  function drawPauseOverlay() {
+    if (!paused || mode !== "play") return;
+    ctx.save();
+    ctx.fillStyle = "rgba(8, 30, 70, 0.35)";
+    roundRect(PLAY.x, PLAY.y, PLAY.w, PLAY.h, 8);
+    ctx.fill();
+    ctx.font = "bold 28px Microsoft YaHei, PingFang SC, sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.lineWidth = 6;
+    ctx.lineJoin = "round";
+    ctx.strokeStyle = "#0A2A5A";
+    ctx.strokeText("暂停", PLAY.x + PLAY.w / 2, PLAY.y + PLAY.h / 2);
+    ctx.fillStyle = "#FFFFFF";
+    ctx.fillText("暂停", PLAY.x + PLAY.w / 2, PLAY.y + PLAY.h / 2);
+    ctx.font = "14px Microsoft YaHei, sans-serif";
+    ctx.fillStyle = "rgba(255,255,255,0.85)";
+    ctx.fillText("点击 ▶ 或按 P / Esc 继续", PLAY.x + PLAY.w / 2, PLAY.y + PLAY.h / 2 + 32);
+    ctx.restore();
+  }
+
   /** Draw SWF bitmap digit string. fonts = Image[10], optional colon Image */
   function drawBitmapDigits(fonts, text, x, y, h, gap, colonImg) {
     if (!fonts || !fonts.length) return x;
@@ -735,10 +930,7 @@
     if (gf) {
       // Water playfield under frame
       ctx.save();
-      // Approximate inner rect matching SWF frame bevel (~22px border on 422x303 → scale to FW x FH)
-      // SWF shape border ~22px on 422×303; keep screws proportional
-      const padX = FW * (22 / 422), padY = FH * (22 / 303);
-      roundRect(FX + padX, FY + padY, FW - padX * 2, FH - padY * 2, 8);
+      roundRect(FX + FRAME_PAD_X, FY + FRAME_PAD_Y, FW - FRAME_PAD_X * 2, FH - FRAME_PAD_Y * 2, 8);
       const wg = ctx.createLinearGradient(0, FY, 0, FY + FH);
       wg.addColorStop(0, "#5CC3FF");
       wg.addColorStop(0.45, "#40AAFF");
@@ -762,7 +954,7 @@
     body.addColorStop(1, "#E0A000");
     ctx.fillStyle = body;
     ctx.fill();
-    roundRect(FX + BORDER, FY + BORDER, FW - BORDER * 2, FH - BORDER * 2, rIn);
+    roundRect(FX + FRAME_PAD_X, FY + FRAME_PAD_Y, FW - FRAME_PAD_X * 2, FH - FRAME_PAD_Y * 2, rIn);
     const wg = ctx.createLinearGradient(0, FY, 0, FY + FH);
     wg.addColorStop(0, "#5CC3FF");
     wg.addColorStop(0.45, "#40AAFF");
@@ -776,12 +968,12 @@
   function drawSeabed(clip) {
     ctx.save();
     if (clip) {
-      roundRect(FX + BORDER, FY + BORDER, FW - BORDER * 2, FH - BORDER * 2, 10);
+      roundRect(FX + FRAME_PAD_X, FY + FRAME_PAD_Y, FW - FRAME_PAD_X * 2, FH - FRAME_PAD_Y * 2, 10);
       ctx.clip();
     }
-    const left = FX + BORDER;
-    const right = FX + FW - BORDER;
-    const baseY = FY + FH - BORDER - 2;
+    const left = FX + FRAME_PAD_X;
+    const right = FX + FW - FRAME_PAD_X;
+    const baseY = FY + FH - FRAME_PAD_Y - 2;
     const strip = ASSET.seabed.stripPlay || ASSET.seabed.stripTitle;
     if (strip) {
       const sh = Math.min(strip.height * ((right - left) / strip.width), FH * 0.28);
@@ -1225,61 +1417,47 @@
 
   // ─── SCORE plaque (bitmap digits from SWF score_mc) ──────
   function drawScorePlaque() {
-    const img = ASSET.ui.scorePlaque;
-    // Plaque asset is 3× source; display ~173×56 logical
-    const pw = 173;
-    const ph = 56;
+    const pw = 178;
+    const ph = 58;
     const px = FX + FW / 2 - pw / 2;
-    const py = FY - ph * 0.55;
+    const py = FY - ph * 0.58;
     const text = String(Math.min(score, 999999)).padStart(6, "0");
-    if (img) {
-      drawAsset(img, px, py, pw, ph);
-      const lcdX = px + pw * 0.12;
-      const lcdY = py + ph * 0.50;
-      const lcdH = ph * 0.40;
-      const fonts = ASSET.digits.score;
-      if (fonts && fonts[0]) {
-        // Center 6 digits in LCD
-        const gap = 1.5;
-        const digH = lcdH * 0.92;
-        const digW = digH * (fonts[0].width / fonts[0].height);
-        const totalW = digW * 6 + gap * 5;
-        const startX = px + (pw - totalW) / 2;
-        drawBitmapDigits(fonts, text, startX, lcdY + (lcdH - digH) / 2, digH, gap, null);
-      } else {
-        ctx.fillStyle = "#FFFFFF";
-        ctx.font = `bold ${Math.max(13, ph * 0.36)}px Arial, sans-serif`;
-        ctx.textAlign = "center";
-        ctx.textBaseline = "middle";
-        ctx.fillText(text, px + pw / 2, lcdY + lcdH / 2);
-      }
-      return;
-    }
-    roundRect(px - 2, py - 2, pw + 4, ph + 4, 8);
+
+    // Crisp vector plaque (no baked black digit slab)
+    ctx.save();
+    roundRect(px - 1.5, py - 1.5, pw + 3, ph + 3, 9);
     ctx.fillStyle = "#3D2200";
     ctx.fill();
-    roundRect(px, py, pw, ph, 7);
-    ctx.fillStyle = "#FFD01F";
+    roundRect(px, py, pw, ph, 8);
+    const body = ctx.createLinearGradient(px, py, px, py + ph);
+    body.addColorStop(0, "#FFE456");
+    body.addColorStop(0.45, "#FFD01F");
+    body.addColorStop(1, "#E8A800");
+    ctx.fillStyle = body;
     ctx.fill();
-    ctx.fillStyle = "#fff";
-    ctx.font = "bold 11px Arial, sans-serif";
+
+    ctx.fillStyle = "#FFFFFF";
+    ctx.font = "bold 12px Arial Black, Arial, sans-serif";
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
-    ctx.fillText("SCORE", px + pw / 2, py + 11);
-    roundRect(px + 10, py + 18, pw - 20, 18, 3);
-    ctx.fillStyle = "#111";
-    ctx.fill();
-    ctx.fillStyle = "#FFFFFF";
-    ctx.font = "bold 15px Arial, sans-serif";
-    ctx.fillText(text, px + pw / 2, py + 28);
+    ctx.letterSpacing = "1px";
+    ctx.fillText("SCORE", px + pw / 2, py + 13);
+
+    const lcdX = px + 12, lcdY = py + 22, lcdW = pw - 24, lcdH = 28;
+    drawLcdWell(lcdX, lcdY, lcdW, lcdH, 4);
+    const digW = 18, digH = 22, gap = 3;
+    const totalW = measureSevenSeg(text, digW, gap);
+    const startX = lcdX + (lcdW - totalW) / 2;
+    drawSevenSegString(text, startX, lcdY + (lcdH - digH) / 2, digW, digH, gap, "#FFF8E7", "rgba(255,248,231,0.0)");
+    ctx.restore();
   }
+
 
   // ─── TIME alarm clock (bitmap 7-seg digits from SWF) ─────
   function drawTimeClock() {
     const img = ASSET.ui.clock;
     const cx = FX + FW - 4;
     const cy = FY + 8;
-    // SWF refreshTimer ticks once/sec as h:mm:ss — remake keeps finer cs for feel
     const total = Math.max(0, timeSec);
     const hh = Math.floor(total / 3600);
     const m = Math.floor((total % 3600) / 60);
@@ -1287,69 +1465,45 @@
     const tstr = `${hh}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
 
     if (img) {
-      // Clock asset is 3×; display near original 95×99
       const w = 95, h = 99;
       const x = cx - w * 0.55, y = cy - h * 0.35;
       drawAsset(img, x, y, w, h);
-      const lcdW = w * 0.6, lcdH = h * 0.17;
-      const lcdX = x + w * 0.16, lcdY = y + h * 0.47;
-      const fonts = ASSET.digits.timer;
-      if (fonts && fonts[0]) {
-        const digH = lcdH * 0.95;
-        const gap = 0.8;
-        // Estimate width
-        let tw = 0;
-        for (const ch of tstr) {
-          if (ch === ":") tw += digH * 0.35;
-          else tw += digH * (fonts[0].width / fonts[0].height) + gap;
-        }
-        const startX = lcdX + (lcdW - tw) / 2;
-        drawBitmapDigits(fonts, tstr, startX, lcdY + (lcdH - digH) / 2, digH, gap, ASSET.digits.colon);
-      } else {
-        ctx.fillStyle = "#E8D84A";
-        ctx.font = `bold ${Math.max(9, lcdH * 0.85)}px 'Courier New', monospace`;
-        ctx.textAlign = "center";
-        ctx.textBaseline = "middle";
-        ctx.fillText(tstr, lcdX + lcdW / 2, lcdY + lcdH / 2 + 0.5);
-      }
-      return;
+      const lcdW = w * 0.62, lcdH = h * 0.18;
+      const lcdX = x + w * 0.15, lcdY = y + h * 0.46;
+      drawLcdWell(lcdX, lcdY, lcdW, lcdH, 3);
+      const digW = 9.5, digH = 14, gap = 1.2;
+      const tw = measureSevenSeg(tstr, digW, gap);
+      const startX = lcdX + (lcdW - tw) / 2;
+      drawSevenSegString(tstr, startX, lcdY + (lcdH - digH) / 2, digW, digH, gap, "#F0E24A", "rgba(240,226,74,0.0)");
+    } else {
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(cx, cy + 14, 32, 0, Math.PI * 2);
+      ctx.fillStyle = "#FFD01F";
+      ctx.fill();
+      ctx.strokeStyle = "#3D2200";
+      ctx.lineWidth = 3;
+      ctx.stroke();
+      ctx.fillStyle = "#fff";
+      ctx.font = "bold 9px Arial, sans-serif";
+      ctx.textAlign = "center";
+      ctx.fillText("TIME", cx, cy + 2);
+      drawLcdWell(cx - 22, cy + 8, 44, 16, 2);
+      drawSevenSegString(tstr, cx - 20, cy + 9, 8, 12, 1, "#F0E24A", "rgba(240,226,74,0.0)");
+      ctx.restore();
     }
-
-    ctx.save();
-    ctx.beginPath();
-    ctx.arc(cx, cy + 14, 32, 0, Math.PI * 2);
-    ctx.fillStyle = "#FFD01F";
-    ctx.fill();
-    ctx.strokeStyle = "#3D2200";
-    ctx.lineWidth = 3;
-    ctx.stroke();
-    ctx.fillStyle = "#fff";
-    ctx.font = "bold 9px Arial, sans-serif";
-    ctx.textAlign = "center";
-    ctx.fillText("TIME", cx, cy + 2);
-    roundRect(cx - 20, cy + 8, 40, 14, 2);
-    ctx.fillStyle = "#111";
-    ctx.fill();
-    ctx.fillStyle = "#E8D84A";
-    ctx.font = "bold 11px 'Courier New', monospace";
-    ctx.fillText(tstr, cx, cy + 16);
-    ctx.restore();
+    drawPauseBtn();
   }
+
 
   function drawLives() {
-    const icon = ASSET.ui.lifeFish;
-    if (icon) {
-      for (let i = 0; i < lives; i++) {
-        // Logical ~40×22 (SWF life icon), asset may be 3×
-        const dw = 40, dh = 22;
-        drawAsset(icon, 12, 88 + i * 48, dw, dh);
-      }
-      return;
-    }
     for (let i = 0; i < lives; i++) {
-      drawFishSprite(28, 100 + i * 52, 16, 1, "player", false, 0, { player: true });
+      const lx = 28, ly = 100 + i * 50;
+      drawVectorFish(lx, ly, 14, 1, "player", false, i * 0.7, 1);
     }
   }
+
+
 
   // ─── Fish art (original SWF sprites via FFDec PNG) ────
   // Frame 1..8 → art types; SWF can request 9..10 → clamp to 8
@@ -1403,9 +1557,11 @@
   function fishPalette(kind) {
     switch (kind) {
       case "player": return { body: "#FF8A00", belly: "#FFE8C8", fin: "#E65100", eye: "big", face: "happy" };
-      case "pink":   return { body: "#FF80AB", belly: "#FCE4EC", fin: "#EC407A", eye: "small", face: "sleepy" };
+      case "pink":
+      case "red":    return { body: "#FF80AB", belly: "#FCE4EC", fin: "#EC407A", eye: "small", face: "sleepy" };
       case "yellow": return { body: "#FFD54F", belly: "#FFF3E0", fin: "#FFB300", eye: "half", face: "smug" };
-      case "blue":   return { body: "#42A5F5", belly: "#BBDEFB", fin: "#1565C0", eye: "angry", face: "grumpy" };
+      case "blue":
+      case "navy":   return { body: "#42A5F5", belly: "#BBDEFB", fin: "#1565C0", eye: "angry", face: "grumpy" };
       case "green":  return { body: "#66BB6A", belly: "#C8E6C9", fin: "#2E7D32", eye: "angry", face: "teeth" };
       case "purple": return { body: "#AB47BC", belly: "#E1BEE7", fin: "#6A1B9A", eye: "angry", face: "teeth" };
       case "tiny":   return { body: "#AED581", belly: "#F1F8E9", fin: "#7CB342", eye: "dot", face: "simple" };
@@ -1415,9 +1571,126 @@
 
   const KIND_TO_ART = { tiny: 1, pink: 2, yellow: 6, blue: 4, green: 5, purple: 8, player: 0 };
 
+  function drawVectorFish(x, y, size, facing, kind, dead, wobble, alpha) {
+    const p = fishPalette(kind === "player" ? "player" : (kind || "tiny"));
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.scale(facing < 0 ? -1 : 1, 1);
+    if (dead) ctx.rotate(Math.PI / 2);
+    if (wobble) ctx.rotate(Math.sin(wobble) * 0.07);
+    if (alpha != null && alpha < 1) ctx.globalAlpha = alpha;
+    const s = Math.max(4, size);
+    const lw = Math.max(1.6, s * 0.1);
+    ctx.lineWidth = lw;
+    ctx.strokeStyle = "#1A1208";
+    ctx.lineJoin = "round";
+    ctx.lineCap = "round";
+
+    // Tail
+    ctx.fillStyle = p.fin;
+    ctx.beginPath();
+    ctx.moveTo(-s * 0.55, 0);
+    ctx.lineTo(-s * 1.25, -s * 0.55);
+    ctx.quadraticCurveTo(-s * 0.95, 0, -s * 1.25, s * 0.55);
+    ctx.closePath();
+    ctx.fill(); ctx.stroke();
+
+    // Dorsal
+    ctx.beginPath();
+    ctx.moveTo(-s * 0.1, -s * 0.55);
+    ctx.quadraticCurveTo(s * 0.15, -s * 1.05, s * 0.45, -s * 0.5);
+    ctx.quadraticCurveTo(s * 0.1, -s * 0.7, -s * 0.1, -s * 0.55);
+    ctx.closePath();
+    ctx.fillStyle = p.fin;
+    ctx.fill(); ctx.stroke();
+
+    // Body
+    const bw = kind === "player" ? s * 1.05 : s * 0.98;
+    const bh = kind === "player" ? s * 0.68 : s * 0.58;
+    const grad = ctx.createLinearGradient(0, -bh, 0, bh);
+    grad.addColorStop(0, p.body);
+    grad.addColorStop(0.55, p.body);
+    grad.addColorStop(1, p.belly);
+    ctx.fillStyle = grad;
+    ctx.beginPath();
+    ctx.ellipse(0, 0, bw, bh, 0, 0, Math.PI * 2);
+    ctx.fill(); ctx.stroke();
+
+    // Belly highlight
+    ctx.fillStyle = p.belly;
+    ctx.globalAlpha = (alpha != null ? alpha : 1) * 0.9;
+    ctx.beginPath();
+    ctx.ellipse(s * 0.08, s * 0.18, s * 0.55, s * 0.28, -0.1, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.globalAlpha = alpha != null ? alpha : 1;
+
+    // Side fin
+    ctx.fillStyle = p.fin;
+    ctx.beginPath();
+    ctx.moveTo(s * 0.05, s * 0.05);
+    ctx.quadraticCurveTo(-s * 0.15, s * 0.45, s * 0.25, s * 0.55);
+    ctx.quadraticCurveTo(s * 0.2, s * 0.25, s * 0.05, s * 0.05);
+    ctx.closePath();
+    ctx.fill(); ctx.stroke();
+
+    // Eye
+    const ex = s * 0.48, ey = -s * 0.12;
+    if (dead) {
+      ctx.strokeStyle = "#1A1208";
+      ctx.lineWidth = Math.max(1.4, s * 0.1);
+      ctx.beginPath();
+      ctx.moveTo(ex - s * 0.16, ey - s * 0.16);
+      ctx.lineTo(ex + s * 0.16, ey + s * 0.16);
+      ctx.moveTo(ex + s * 0.16, ey - s * 0.16);
+      ctx.lineTo(ex - s * 0.16, ey + s * 0.16);
+      ctx.stroke();
+    } else {
+      const er = Math.max(2.2, s * 0.22);
+      ctx.fillStyle = "#fff";
+      ctx.strokeStyle = "#1A1208";
+      ctx.lineWidth = Math.max(1.2, lw * 0.7);
+      ctx.beginPath();
+      ctx.arc(ex, ey, er, 0, Math.PI * 2);
+      ctx.fill(); ctx.stroke();
+      ctx.fillStyle = "#1A1208";
+      ctx.beginPath();
+      ctx.arc(ex + er * 0.22, ey, er * 0.42, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = "#fff";
+      ctx.beginPath();
+      ctx.arc(ex + er * 0.4, ey - er * 0.28, er * 0.16, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // Smile / mouth for player
+    if (kind === "player" && !dead) {
+      ctx.strokeStyle = "#1A1208";
+      ctx.lineWidth = Math.max(1.3, s * 0.08);
+      ctx.beginPath();
+      ctx.arc(s * 0.72, s * 0.08, s * 0.18, 0.15, Math.PI - 0.15);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
   function drawFishSprite(x, y, size, facing, kind, dead, wobble, opts) {
     opts = opts || {};
     const alpha = opts.alpha;
+    // Prefer crisp vector fish so large sizes stay sharp (user request)
+    const useVector = opts.forceBitmap ? false : true;
+    if (useVector) {
+      const k = (kind === "player" || opts.player) ? "player" : (kind || "tiny");
+      // Map artType → palette kind when available
+      let kk = k;
+      if (!opts.player && opts.artType) {
+        const map = ["tiny","pink","red","blue","green","yellow","navy","purple"];
+        kk = map[(opts.artType - 1) | 0] || k;
+        if (kk === "red") kk = "pink";
+        if (kk === "navy") kk = "blue";
+      }
+      drawVectorFish(x, y, size, facing, kk, !!dead, wobble || 0, alpha);
+      return;
+    }
     let img = null;
     if (kind === "player" || opts.player) {
       img = pickPlayerFrame(!!dead, opts.chompT || 0, opts.hurtT || 0, wobble || 0);
@@ -1427,39 +1700,9 @@
       img = pickNpcFrame(art, wobble || 0);
     }
     if (drawFishImage(img, x, y, size, facing, dead, wobble, alpha)) return;
-
-    // vector fallback (pre-asset)
-    const p = fishPalette(kind === "player" ? "player" : (kind || "tiny"));
-    ctx.save();
-    ctx.translate(x, y);
-    ctx.scale(facing, 1);
-    if (dead) ctx.rotate(Math.PI / 2);
-    if (wobble) ctx.rotate(Math.sin(wobble) * 0.08);
-    if (alpha != null && alpha < 1) ctx.globalAlpha = alpha;
-    const s = size;
-    ctx.lineWidth = Math.max(2.2, s * 0.12);
-    ctx.strokeStyle = "#000";
-    ctx.lineJoin = "round";
-    ctx.lineCap = "round";
-    ctx.fillStyle = p.fin;
-    ctx.beginPath();
-    ctx.moveTo(-s * 0.7, 0);
-    ctx.lineTo(-s * 1.35, -s * 0.5);
-    ctx.quadraticCurveTo(-s * 1.05, 0, -s * 1.35, s * 0.5);
-    ctx.closePath();
-    ctx.fill(); ctx.stroke();
-    const bw = kind === "player" ? s * 1.05 : s;
-    const bh = kind === "player" ? s * 0.68 : s * 0.6;
-    ctx.fillStyle = p.body;
-    ctx.beginPath();
-    ctx.ellipse(0, 0, bw, bh, 0, 0, Math.PI * 2);
-    ctx.fill(); ctx.stroke();
-    ctx.fillStyle = p.belly;
-    ctx.beginPath();
-    ctx.ellipse(s * 0.1, s * 0.2, s * 0.55, s * 0.3, 0, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.restore();
+    drawVectorFish(x, y, size, facing, kind === "player" ? "player" : (kind || "tiny"), !!dead, wobble || 0, alpha);
   }
+
 
   // ─── Entities (SWF-faithful logic; see SWF_LOGIC.md) ──
   // Original stage 550×400 @ 30fps. Positions live in SWF space; drawn into PLAY.
@@ -1473,8 +1716,8 @@
     F_SIZE0: 15,
     F_WIN: 250,
     NPC: 10,
-    WRAP_L: 80,
-    WRAP_R: 450,
+    WRAP_L: 0,
+    WRAP_R: 550,
     Y_MIN: 70,
     Y_MAX: 360,
     SPAWN_Y0: 95,
@@ -1593,6 +1836,7 @@
     player.hurtT = 0;
     fish = makeNpcSlots(player.f_size);
     deathFish = null;
+    paused = false;
     shake = 0;
     won = false;
     playSfx("splash", { volume: 0.8 });
@@ -1609,6 +1853,7 @@
     if (mode === "title" && (e.code === "Enter" || e.code === "Space")) { unlockAudio(); startGame(); }
     if (mode === "help" && (e.code === "Enter" || e.code === "Space" || e.code === "Escape")) mode = "title";
     if ((mode === "over" || mode === "win") && (e.code === "Enter" || e.code === "Space")) startGame();
+    if (mode === "play" && (e.code === "KeyP" || e.code === "Escape")) { e.preventDefault(); togglePause(); }
   });
   window.addEventListener("keyup", (e) => {
     keys[e.code] = false;
@@ -1707,8 +1952,10 @@
       btnHover = (p.x > W - 90 && p.y > H - 90) ? "next" : null;
       canvas.style.cursor = btnHover ? "pointer" : "default";
     } else if (mode === "over" || mode === "win") {
-      btnHover = (p.x > W / 2 - 70 && p.x < W / 2 + 70 && p.y > H * 0.62 && p.y < H * 0.62 + 44) ? "retry" : null;
+      btnHover = (p.x > W / 2 - 70 && p.x < W / 2 + 70 && p.y > H * 0.64 && p.y < H * 0.64 + 44) ? "retry" : null;
       canvas.style.cursor = btnHover ? "pointer" : "default";
+    } else if (mode === "play") {
+      canvas.style.cursor = hitPauseBtn(p) ? "pointer" : "default";
     } else {
       canvas.style.cursor = "default";
     }
@@ -1815,6 +2062,7 @@
 
   function handleClick(p) {
     unlockAudio();
+    if (mode === "play" && hitPauseBtn(p)) { togglePause(); return; }
     if (mode === "title") {
       if (hitStarBtn(p, W * 0.35, H * 0.52)) startGame();
       else if (hitStarBtn(p, W * 0.65, H * 0.52)) {
@@ -1828,7 +2076,7 @@
     } else if (mode === "help") {
       mode = "title";
     } else if (mode === "over" || mode === "win") {
-      if (p.x > W / 2 - 70 && p.x < W / 2 + 70 && p.y > H * 0.62 && p.y < H * 0.62 + 44) startGame();
+      if (p.x > W / 2 - 70 && p.x < W / 2 + 70 && p.y > H * 0.64 && p.y < H * 0.64 + 44) startGame();
     }
   }
 
@@ -1845,6 +2093,8 @@
       }
       return;
     }
+
+    if (paused) return;
 
     playTime += dt;
     timeSec = playTime;
@@ -1919,7 +2169,7 @@
     if (goD) player.ymove += swim * frames;
 
     player.x += player.xmove * frames;
-    // Horizontal wrap (SWF 80 ↔ 450)
+    // Horizontal wrap at visible gold-frame inner edges (PLAY maps 0..SWF.W)
     if (player.x > SWF.WRAP_R) player.x = SWF.WRAP_L;
     if (player.x < SWF.WRAP_L) player.x = SWF.WRAP_R;
 
@@ -2221,7 +2471,7 @@
     drawSeabed(true);
 
     ctx.save();
-    roundRect(FX + BORDER, FY + BORDER, FW - BORDER * 2, FH - BORDER * 2, 10);
+    roundRect(FX + FRAME_PAD_X, FY + FRAME_PAD_Y, FW - FRAME_PAD_X * 2, FH - FRAME_PAD_Y * 2, 10);
     ctx.clip();
 
     const all = fish.slice().sort((a, b) => a.y - b.y);
@@ -2261,21 +2511,37 @@
     drawScorePlaque();
     drawTimeClock();
     drawLives();
+    drawPauseOverlay();
   }
 
   function drawOver() {
     drawOuterBg();
     drawTitleSeabed();
+
+    const px = 70, py = 62, pw = 500, ph = 270;
+    const padX = pw * (22 / 422), padY = ph * (22 / 303);
+
+    // Victorious / defeated fish peeks under the plaque (alive on win)
     if (deathFish) {
-      drawFishSprite(deathFish.x, deathFish.y, deathFish.size || 18, 1, "player", true, 0, { player: true });
+      const isWin = mode === "win";
+      const sz = Math.max(42, (deathFish.size || 18) * (isWin ? 1.5 : 1.15));
+      // Force vector path with explicit dead flag (never hit/X-eye on win)
+      drawVectorFish(
+        W / 2 + (isWin ? 120 : 150),
+        py + ph + 6,
+        sz,
+        -1,
+        "player",
+        !isWin,
+        isWin ? performance.now() / 180 : 0,
+        1
+      );
     }
-    const px = 70, py = 70, pw = 500, ph = 280;
-    // Gold frame chrome
+
     if (ASSET.ui.goldFrame) {
       drawAsset(ASSET.ui.goldFrame, px, py, pw, ph);
-      // fill inner with light blue
       ctx.save();
-      roundRect(px + 28, py + 28, pw - 56, ph - 56, 8);
+      roundRect(px + padX, py + padY, pw - padX * 2, ph - padY * 2, 8);
       ctx.fillStyle = "#A8D4F0";
       ctx.fill();
       ctx.restore();
@@ -2283,58 +2549,73 @@
       roundRect(px, py, pw, ph, 16);
       ctx.fillStyle = "#FFD01F";
       ctx.fill();
-      roundRect(px + 14, py + 14, pw - 28, ph - 28, 10);
+      roundRect(px + padX, py + padY, pw - padX * 2, ph - padY * 2, 10);
       ctx.fillStyle = "#A8D4F0";
       ctx.fill();
     }
 
     if (mode === "win" && ASSET.ui.congratulation) {
-      drawAssetSized(ASSET.ui.congratulation, W / 2, py + 70, 380, 80);
+      drawAssetSized(ASSET.ui.congratulation, W / 2, py + padY + 44, 360, 70);
     } else if (ASSET.ui.gameOver) {
-      drawAssetSized(ASSET.ui.gameOver, W / 2, py + 70, 280, 56);
+      drawAssetSized(ASSET.ui.gameOver, W / 2, py + padY + 44, 260, 52);
     } else {
       ctx.font = "bold 42px Impact, Arial Black, sans-serif";
       ctx.textAlign = "center";
       ctx.fillStyle = "#FFFFFF";
-      ctx.fillText(mode === "win" ? "CLEAR!" : "GAME OVER", W / 2, py + 70);
+      ctx.fillText(mode === "win" ? "CLEAR!" : "GAME OVER", W / 2, py + padY + 44);
     }
 
-    // Score plaque (점수 + digits)
-    if (ASSET.ui.gameoverScore) {
-      const gs = ASSET.ui.gameoverScore;
-      const gw = Math.min(320, gs.width * 1.1);
-      const gh = gw * (gs.height / gs.width);
-      const gx = W / 2 - gw / 2, gy = py + 120;
-      drawAsset(gs, gx, gy, gw, gh);
-      // Original: orange 점수 tag + LCD digits on a dark-navy strip (no hard black slab)
-      roundRect(gx + gw * 0.27, gy + gh * 0.04, gw * 0.73, gh * 0.92, 8);
-      ctx.fillStyle = "rgba(10,30,70,0.85)";
+    // Flush score strip: orange tag + LCD share one rounded bar
+    const text = String(Math.min(score, 999999)).padStart(6, "0");
+    const rowW = 360, rowH = 50;
+    const gx = W / 2 - rowW / 2;
+    const gy = py + ph * 0.50;
+    const tagW = 96;
+    roundRect(gx, gy, rowW, rowH, 12);
+    ctx.fillStyle = "#1A1208";
+    ctx.fill();
+    // Orange tag flush left
+    ctx.save();
+    roundRect(gx, gy, tagW, rowH, 12);
+    ctx.clip();
+    roundRect(gx, gy, tagW + 16, rowH, 12);
+    const og = ctx.createLinearGradient(gx, gy, gx, gy + rowH);
+    og.addColorStop(0, "#FFB74D");
+    og.addColorStop(1, "#F57C00");
+    ctx.fillStyle = og;
+    ctx.fill();
+    ctx.restore();
+    // seam
+    ctx.fillStyle = "#F57C00";
+    ctx.fillRect(gx + tagW - 8, gy, 10, rowH);
+    for (const [sx, sy] of [[10, 10], [tagW - 14, 10], [10, rowH - 10], [tagW - 14, rowH - 10]]) {
+      ctx.beginPath();
+      ctx.arc(gx + sx, gy + sy, 3, 0, Math.PI * 2);
+      ctx.fillStyle = "#FFE0B2";
       ctx.fill();
-      if (ASSET.ui.gameoverLabel) drawAsset(ASSET.ui.gameoverLabel, gx, gy, gw * (232 / 819), gh);
-      const text = String(Math.min(score, 999999)).padStart(6, "0");
-      const fonts = ASSET.digits.score;
-      if (fonts && fonts[0]) {
-        const digH = gh * 0.62;
-        const gap = 2;
-        const digW = digH * (fonts[0].width / fonts[0].height);
-        const totalW = digW * 6 + gap * 5;
-        const startX = gx + gw - 14 - totalW;
-        drawBitmapDigits(fonts, text, startX, gy + (gh - digH) / 2, digH, gap, null);
-      } else {
-        ctx.fillStyle = "#FFEE58";
-        ctx.font = `bold ${Math.max(18, gh * 0.55)}px 'Courier New', monospace`;
-        ctx.textAlign = "right";
-        ctx.textBaseline = "middle";
-        ctx.fillText(text, gx + gw - 14, gy + gh / 2 + 1);
-      }
-    } else {
-      ctx.fillStyle = "#FFEE58";
-      ctx.font = "bold 28px 'Courier New', monospace";
-      ctx.textAlign = "center";
-      ctx.fillText(String(score).padStart(6, "0"), W / 2, py + 140);
+      ctx.strokeStyle = "#5D3200";
+      ctx.lineWidth = 1.1;
+      ctx.stroke();
     }
+    ctx.fillStyle = "#1A1208";
+    ctx.font = "bold 24px Malgun Gothic, Microsoft YaHei, sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText("점수", gx + tagW / 2 - 2, gy + rowH / 2 + 1);
 
-    roundRect(W / 2 - 70, H * 0.62, 140, 44, 12);
+    const lcdX = gx + tagW + 4, lcdW = rowW - tagW - 10;
+    const digW = 30, digH = 34, gap = 5;
+    const tw = measureSevenSeg(text, digW, gap);
+    // Yellow calculator digits (match original win plaque)
+    drawSevenSegString(text, lcdX + (lcdW - tw) / 2, gy + (rowH - digH) / 2, digW, digH, gap, "#FFE566", "rgba(255,229,102,0.0)");
+
+    // Outer stroke for whole strip
+    roundRect(gx, gy, rowW, rowH, 12);
+    ctx.strokeStyle = "#3D2200";
+    ctx.lineWidth = 2.5;
+    ctx.stroke();
+
+    roundRect(W / 2 - 70, H * 0.64, 140, 44, 12);
     ctx.fillStyle = btnHover === "retry" ? "#FFA726" : "#FF8C00";
     ctx.fill();
     ctx.strokeStyle = "#000";
@@ -2344,8 +2625,10 @@
     ctx.font = "bold 20px Microsoft YaHei, sans-serif";
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
-    ctx.fillText("再玩一次", W / 2, H * 0.62 + 22);
+    ctx.fillText("再玩一次", W / 2, H * 0.64 + 22);
   }
+
+
 
   // ─── Loop ────────────────────────────────────────────────
   let last = performance.now();

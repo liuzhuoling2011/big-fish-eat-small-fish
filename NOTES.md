@@ -32,3 +32,12 @@ Matched / improved:
 
 - SWF: `/workspace/4399-1876/downloader-trial/results/historical_20050731_7.swf`
 - FFDec SVG / sprites under `/workspace/4399-1876/`
+
+## Phase 4 — polish (2026-10-10)
+
+- SCORE/TIME: crisp vector 7-seg digits; recessed plaque well (no baked black digit slabs).
+- Win screen: proportional gold-frame inner pad; flush 점수+LCD strip; yellow calculator digits; alive vector player fish (no X-eye).
+- Lives: vector fish icons (also `assets/ui/life-fish.svg`).
+- Fish: prefer canvas vector redraw (`assets/fish/svg/*.svg` references) so large sizes stay sharp.
+- Pause/resume control fused left of TIME clock (click / P / Esc).
+- Horizontal wrap = full SWF width mapped to gold-frame inner water (`FRAME_PAD_*` / `PLAY`).

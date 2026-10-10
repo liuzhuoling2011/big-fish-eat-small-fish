@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 80 44" width="80" height="44">
+  <defs>
+    <linearGradient id="b" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#FF9800"/>
+      <stop offset="55%" stop-color="#FFB74D"/>
+      <stop offset="100%" stop-color="#FFE0B2"/>
+    </linearGradient>
+  </defs>
+  <!-- tail -->
+  <path d="M14 22 L2 8 Q10 22 2 36 Z" fill="#E65100" stroke="#1A1208" stroke-width="2.2" stroke-linejoin="round"/>
+  <!-- body -->
+  <ellipse cx="44" cy="22" rx="28" ry="16" fill="url(#b)" stroke="#1A1208" stroke-width="2.4"/>
+  <!-- belly -->
+  <ellipse cx="48" cy="28" rx="16" ry="8" fill="#FFF3E0" opacity="0.95"/>
+  <!-- dorsal -->
+  <path d="M34 8 Q44 0 54 8 Q44 12 34 8Z" fill="#EF6C00" stroke="#1A1208" stroke-width="1.8" stroke-linejoin="round"/>
+  <!-- fin -->
+  <path d="M40 24 Q34 30 42 34" fill="none" stroke="#E65100" stroke-width="2.2" stroke-linecap="round"/>
+  <!-- eye -->
+  <circle cx="58" cy="18" r="5.2" fill="#fff" stroke="#1A1208" stroke-width="1.6"/>
+  <circle cx="59.5" cy="18" r="2.2" fill="#1A1208"/>
+  <circle cx="60.4" cy="17" r="0.7" fill="#fff"/>
+</svg>

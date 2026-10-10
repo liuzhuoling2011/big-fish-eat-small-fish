@@ -49,3 +49,11 @@ Matched / improved:
 - TIME: cover baked blurry label; crisp canvas "TIME"; LCD well fills clock window fractions.
 - Game over / win: content clipped to inner panel; score strip + button inset with correct pads.
 - Fish: vtracer SVG of original SWF sprites → `assets/fish/svg/` + `svg-raster/*.webp`; draw path prefers these over generic cartoons.
+
+## Phase 6 — polish pass (2026-10-10 evening)
+
+- Title start/help buttons: @2× Lanczos+unsharp of original SWF stars (642×534).
+- TIME: mm:ss until ≥1h; wider LCD + auto-fit digits (no overflow).
+- Lives: player-fish art (`player/swim` HD), not alternate life icon.
+- Fish: @3× HD of original SWF bitmaps (pixel-identical look/borders); SVG wrappers href the HD rasters. Dropped inaccurate vtracer outlines.
+- Play + game-over: light-blue overpaints gold-frame hole to yellow edge (covers dark rim/bevel) so blue flush-meets gold.

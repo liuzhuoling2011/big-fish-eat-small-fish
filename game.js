@@ -32,6 +32,25 @@
     w: FW - FRAME_PAD_X * 2,
     h: FH - FRAME_PAD_Y * 2,
   };
+  // Inner yellow edge (before dark rim/bevel) — fill here AFTER frame so blue flush-meets gold
+  const FRAME_FILL_PAD_X = FW * (42 / 1100);
+  const FRAME_FILL_PAD_Y = FH * (42 / 790);
+  function fillFrameHole(x, y, w, h, style) {
+    const fpx = w * (42 / 1100), fpy = h * (42 / 790);
+    const ix = x + fpx, iy = y + fpy, iw = w - fpx * 2, ih = h - fpy * 2;
+    const rr = Math.min(12, fpx * 0.4, fpy * 0.4);
+    ctx.save();
+    ctx.beginPath();
+    ctx.moveTo(ix + rr, iy);
+    ctx.arcTo(ix + iw, iy, ix + iw, iy + ih, rr);
+    ctx.arcTo(ix + iw, iy + ih, ix, iy + ih, rr);
+    ctx.arcTo(ix, iy + ih, ix, iy, rr);
+    ctx.arcTo(ix, iy, ix + iw, iy, rr);
+    ctx.closePath();
+    ctx.fillStyle = style;
+    ctx.fill();
+    ctx.restore();
+  }
 
   const keys = Object.create(null);
   let pointer = null;
@@ -191,7 +210,7 @@
   fitStage();
 
   // ─── Original SWF assets (WebP + phased load for slow nets) ───
-  const ASSET_VER = "v21";
+  const ASSET_VER = "v24";
   const ASSET = {
     ready: false,       // title-critical ready
     playReady: false,   // enough to start a round
@@ -364,26 +383,21 @@
     await loadDigitAtlases();
 
     setProgress(0.5, "加载小鱼…");
-    // Prefer faithful SVG traces (vtracer of original SWF sprites) — sharp at any size
-    const svgStills = await mapLimit([1,2,3,4,5,6,7,8], 4, (t) =>
-      loadImage(`assets/fish/svg-raster/type${t}.webp`));
-    const bmpStills = await mapLimit([1,2,3,4,5,6,7,8], 4, (t) =>
+    // HD @3x originals (pixel-identical to SWF sprites, sharp when large)
+    const hdStills = await mapLimit([1,2,3,4,5,6,7,8], 4, (t) =>
       loadImage(`assets/fish/npc/type${t}/1.webp`));
-    ASSET.npcStill = svgStills.map((im, i) => im || bmpStills[i]);
-    ASSET.npcSvg = svgStills;
-    ASSET.npc = ASSET.npcStill.map((im) => (im ? [im] : []));
+    ASSET.npcStill = hdStills;
+    ASSET.npcSvg = hdStills; // same art; kept for callers
+    ASSET.npc = hdStills.map((im) => (im ? [im] : []));
 
     setProgress(0.62, "加载玩家…");
-    const playerSvg = await loadImage("assets/fish/svg-raster/player.webp");
     const swim = await mapLimit([1,2,3,4,5,6], 4, (i) =>
       loadImage(`assets/fish/player/swim/${String(i).padStart(2, "0")}.webp`));
     ASSET.player.swim = swim.filter(Boolean);
-    ASSET.player.svg = playerSvg;
-    ASSET.player.idle = playerSvg || ASSET.player.swim[0] || null;
-    // Life icon from traced player art
-    if (!ASSET.ui.lifeFish) {
-      ASSET.ui.lifeFish = await loadImage("assets/ui/life-fish.webp");
-    }
+    ASSET.player.svg = ASSET.player.swim[0] || await loadImage("assets/fish/svg-raster/player.webp");
+    ASSET.player.idle = ASSET.player.svg || ASSET.player.swim[0] || null;
+    // Life icons = player fish style
+    ASSET.ui.lifeFish = ASSET.player.idle || ASSET.ui.lifeFish || await loadImage("assets/ui/life-fish.webp");
 
     for (const [k, url] of Object.entries(SFX_CORE)) {
       ASSET.sfx[k] = loadAudio(url);
@@ -951,17 +965,23 @@
   function drawGoldFrame() {
     const gf = ASSET.ui.goldFrame;
     if (gf) {
-      // Water playfield under frame
+      // Under-paint, draw frame, then over-paint hole to yellow edge (covers dark rim)
       ctx.save();
-      roundRect(PLAY.x, PLAY.y, PLAY.w, PLAY.h, 8);
-      const wg = ctx.createLinearGradient(0, PLAY.y, 0, PLAY.y + PLAY.h);
+      const wg = ctx.createLinearGradient(0, FY, 0, FY + FH);
       wg.addColorStop(0, "#5CC3FF");
       wg.addColorStop(0.45, "#40AAFF");
       wg.addColorStop(1, "#2A88DD");
       ctx.fillStyle = wg;
-      ctx.fill();
+      ctx.fillRect(FX + 1, FY + 1, FW - 2, FH - 2);
       ctx.restore();
       drawAsset(gf, FX, FY, FW, FH);
+      {
+        const wg2 = ctx.createLinearGradient(0, FY, 0, FY + FH);
+        wg2.addColorStop(0, "#5CC3FF");
+        wg2.addColorStop(0.45, "#40AAFF");
+        wg2.addColorStop(1, "#2A88DD");
+        fillFrameHole(FX, FY, FW, FH, wg2);
+      }
       return;
     }
     ctx.save();
@@ -1321,8 +1341,13 @@
       ? (isHelp ? (ASSET.ui.btnHelpOver || ASSET.ui.btnHelp) : (ASSET.ui.btnStartOver || ASSET.ui.btnStart))
       : (isHelp ? ASSET.ui.btnHelp : ASSET.ui.btnStart);
     if (img) {
-      const s = hover ? 1.08 : 1;
-      drawAssetSized(img, cx, cy, 107 * s, 89 * s);
+      const s = hover ? 1.06 : 1;
+      ctx.save();
+      ctx.imageSmoothingEnabled = true;
+      if ("imageSmoothingQuality" in ctx) ctx.imageSmoothingQuality = "high";
+      // HD @2x source (642×534) drawn near native → crisp on hi-DPI
+      drawAssetSized(img, cx, cy, 124 * s, 103 * s);
+      ctx.restore();
       return;
     }
     const s = hover ? 1.07 : 1;
@@ -1479,9 +1504,12 @@
     const hh = Math.floor(total / 3600);
     const mm = Math.floor((total % 3600) / 60);
     const ss = Math.floor(total % 60);
-    const tstr = `${hh}:${String(mm).padStart(2, "0")}:${String(ss).padStart(2, "0")}`;
+    // Fit LCD: omit hours until >= 1h (original plaque is tiny)
+    const tstr = hh > 0
+      ? `${hh}:${String(mm).padStart(2, "0")}:${String(ss).padStart(2, "0")}`
+      : `${String(mm).padStart(2, "0")}:${String(ss).padStart(2, "0")}`;
 
-    const r = 36;
+    const r = 38;
     const ox = cx - 8, oy = cy + 10;
     ctx.save();
     // feet
@@ -1542,12 +1570,18 @@
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
     ctx.fillText("TIME", ox, oy - r * 0.38);
-    // LCD well fills face window
-    const lcdW = r * 1.15, lcdH = r * 0.48;
-    const lcdX = ox - lcdW / 2, lcdY = oy - lcdH * 0.15;
-    drawLcdWell(lcdX, lcdY, lcdW, lcdH, 4);
-    const digW = 9.5, digH = 15, gap = 1.2;
-    const tw = measureSevenSeg(tstr, digW, gap);
+    // LCD well spans most of the yellow face; digits auto-fit with padding
+    const lcdW = r * 1.55, lcdH = r * 0.40;
+    const lcdX = ox - lcdW / 2, lcdY = oy + 1;
+    drawLcdWell(lcdX, lcdY, lcdW, lcdH, 3.5);
+    let digW = 8.2, digH = 13.5, gap = 1.0;
+    let tw = measureSevenSeg(tstr, digW, gap);
+    const maxTw = lcdW - 8;
+    if (tw > maxTw) {
+      const s = maxTw / tw;
+      digW *= s; digH *= s; gap *= s;
+      tw = measureSevenSeg(tstr, digW, gap);
+    }
     drawSevenSegString(tstr, lcdX + (lcdW - tw) / 2, lcdY + (lcdH - digH) / 2, digW, digH, gap, "#F5E84A", "rgba(245,232,74,0.0)");
     ctx.restore();
     drawPauseBtn();
@@ -1556,11 +1590,12 @@
   function drawLives() {
     for (let i = 0; i < lives; i++) {
       const lx = 28, ly = 100 + i * 50;
-      const img = ASSET.ui.lifeFish || ASSET.player.svg || ASSET.player.idle;
+      // Must match player fish art (not a different life icon style)
+      const img = ASSET.player.svg || ASSET.player.idle || ASSET.ui.lifeFish;
       if (img) {
-        drawFishImage(img, lx, ly, 14, 1, false, i * 0.7, 1);
+        drawFishImage(img, lx, ly, 15, 1, false, i * 0.7, 1);
       } else {
-        drawVectorFish(lx, ly, 14, 1, "player", false, i * 0.7, 1);
+        drawVectorFish(lx, ly, 15, 1, "player", false, i * 0.7, 1);
       }
     }
   }
@@ -1742,19 +1777,16 @@
     // Generic cartoon vector is fallback only.
     let img = null;
     if (kind === "player" || opts.player) {
-      // Prefer traced SVG still for clarity; use chomp/hit bitmaps during anim
-      if ((opts.chompT > 0 || opts.hurtT > 0) && !dead) {
-        img = pickPlayerFrame(!!dead, opts.chompT || 0, opts.hurtT || 0, wobble || 0);
-      } else if (dead) {
-        img = pickPlayerFrame(true, 0, 0, 0);
-      } else {
-        img = ASSET.player.svg || pickPlayerFrame(false, 0, 0, wobble || 0);
-      }
+      // HD @3x original frames (pixel-faithful). Anim when available.
+      img = pickPlayerFrame(!!dead, opts.chompT || 0, opts.hurtT || 0, wobble || 0)
+        || ASSET.player.svg || ASSET.player.idle;
     } else {
       let art = opts.artType || KIND_TO_ART[kind] || 1;
       art = clamp(art, 1, 8);
-      // SVG still is sharp; fall back to anim frames / bitmap still
-      img = (ASSET.npcSvg && ASSET.npcSvg[art - 1]) || pickNpcFrame(art, wobble || 0);
+      // Prefer swim-cycle HD frames (same art as original bitmaps, sharp when huge)
+      img = pickNpcFrame(art, wobble || 0)
+        || (ASSET.npcSvg && ASSET.npcSvg[art - 1])
+        || (ASSET.npcStill && ASSET.npcStill[art - 1]);
     }
     if (drawFishImage(img, x, y, size, facing, dead, wobble, alpha)) return;
     const k = (kind === "player" || opts.player) ? "player" : (kind || "tiny");
@@ -2624,13 +2656,13 @@
     }
 
     if (ASSET.ui.goldFrame) {
-      // Fill inner water first, then frame on top (aligns blue with hole)
+      // Under-paint, frame, then over-paint to yellow edge so blue flush-meets gold
       ctx.save();
-      roundRect(innerX, innerY, innerW, innerH, 8);
       ctx.fillStyle = "#A8D4F0";
-      ctx.fill();
+      ctx.fillRect(px + 1, py + 1, pw - 2, ph - 2);
       ctx.restore();
       drawAsset(ASSET.ui.goldFrame, px, py, pw, ph);
+      fillFrameHole(px, py, pw, ph, "#A8D4F0");
     } else {
       roundRect(px, py, pw, ph, 16);
       ctx.fillStyle = "#FFD01F";
@@ -2747,4 +2779,60 @@
   }
 
   requestAnimationFrame(frame);
+
+
+  // ─── QA capture hooks (safe no-op unless ?qa=1) ───────────
+  (function qaHooks() {
+    const q = new URLSearchParams(location.search);
+    if (q.get("qa") !== "1") return;
+    const want = q.get("mode") || "title";
+    const started = performance.now();
+    function markReady() { window.__qaReady = true; }
+    function waitPlayReady(then) {
+      if (ASSET.playReady) { then(); return; }
+      const w2 = setInterval(() => {
+        if (ASSET.playReady || performance.now() - started > 35000) {
+          clearInterval(w2);
+          then();
+        }
+      }, 150);
+    }
+    const iv = setInterval(() => {
+      if (!ASSET.ready) {
+        if (performance.now() - started > 30000) clearInterval(iv);
+        return;
+      }
+      clearInterval(iv);
+      if (want === "title") {
+        mode = "title";
+        markReady();
+      } else if (want === "play") {
+        waitPlayReady(() => {
+          try { startGame(); } catch (e) {}
+          setTimeout(() => {
+            paused = true;
+            timeSec = 65;
+            score = 123456;
+            lives = 2;
+            markReady();
+          }, 1200);
+        });
+      } else if (want === "over" || want === "win") {
+        waitPlayReady(() => {
+          try { startGame(); } catch (e) {}
+          setTimeout(() => {
+            score = want === "win" ? 23456 : 12345;
+            deathFish = { size: want === "win" ? 40 : 22 };
+            mode = want;
+            paused = false;
+            markReady();
+          }, 900);
+        });
+      } else {
+        markReady();
+      }
+    }, 150);
+  })();
+
+
 })();

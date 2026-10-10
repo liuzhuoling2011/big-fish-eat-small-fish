@@ -59,6 +59,8 @@
     npcStill: [], // Image[8]
     player: { swim: [], chomp: [], hit: [], idle: null, chompStill: null, hurt: null },
     sfx: {},
+    ui: {},
+    seabed: {},
   };
 
   function loadImage(src) {
@@ -125,6 +127,50 @@
       ASSET.sfx.bgm.loop = true;
       ASSET.sfx.bgm.volume = 0.35;
     }
+
+    // Original SWF chrome (FFDec shapes/sprites/buttons + frame crops)
+    const uiFiles = {
+      logo: "assets/ui/logo.png",
+      logoHud: "assets/ui/logo-hud.png",
+      btnStart: "assets/ui/btn-start.png",
+      btnStartOver: "assets/ui/btn-start-over.png",
+      btnStartDown: "assets/ui/btn-start-down.png",
+      btnHelp: "assets/ui/btn-help.png",
+      btnHelpOver: "assets/ui/btn-help-over.png",
+      btnHelpDown: "assets/ui/btn-help-down.png",
+      btnNext: "assets/ui/btn-next.png",
+      clock: "assets/ui/clock.png",
+      scorePlaque: "assets/ui/score-plaque.png",
+      lifeFish: "assets/ui/life-fish.png",
+      livesStack: "assets/ui/lives-stack.png",
+      goldFrame: "assets/ui/gold-frame.png",
+      helpPanel: "assets/ui/help-panel.png",
+      gameOver: "assets/ui/game-over.png",
+      congratulation: "assets/ui/congratulation.png",
+      gameoverScore: "assets/ui/gameover-score.png",
+      bgBubbles: "assets/ui/bg-bubbles.png",
+      bgWater: "assets/ui/bg-water.png",
+    };
+    for (const [k, srcPath] of Object.entries(uiFiles)) {
+      ASSET.ui[k] = await loadImage(srcPath);
+    }
+    const seabedFiles = {
+      stripTitle: "assets/seabed/strip-title.png",
+      stripPlay: "assets/seabed/strip-play.png",
+      crab: "assets/seabed/crab.png",
+      clam: "assets/seabed/clam.png",
+      anemone: "assets/seabed/anemone.png",
+      starfish: "assets/seabed/starfish.png",
+      coral: "assets/seabed/coral-spotted.png",
+      seaweedA: "assets/seabed/seaweed-a.png",
+      seaweedB: "assets/seabed/seaweed-b.png",
+      seaweedC: "assets/seabed/seaweed-c.png",
+      seaweedD: "assets/seabed/seaweed-d.png",
+    };
+    for (const [k, srcPath] of Object.entries(seabedFiles)) {
+      ASSET.seabed[k] = await loadImage(srcPath);
+    }
+
     ASSET.ready = ASSET.npcStill.some(Boolean) && ASSET.player.idle;
   }
 
@@ -196,6 +242,22 @@
     return `rgb(${r},${g},${b})`;
   }
 
+  function drawAsset(img, x, y, w, h) {
+    if (!img) return false;
+    if (w == null) w = img.width;
+    if (h == null) h = img.height;
+    ctx.drawImage(img, x, y, w, h);
+    return true;
+  }
+
+  function drawAssetCentered(img, cx, cy, scale) {
+    if (!img) return false;
+    scale = scale || 1;
+    const w = img.width * scale, h = img.height * scale;
+    ctx.drawImage(img, cx - w / 2, cy - h / 2, w, h);
+    return true;
+  }
+
   // ─── Outer ambient ───────────────────────────────────────
   function drawOuterBg() {
     ctx.fillStyle = "#015BE6";
@@ -220,16 +282,30 @@
     }
   }
 
-  // ─── Candy gold frame (heavy bevel) ──────────────────────
+  // ─── Candy gold frame (original SWF shape, fallback vector) ──
   function drawGoldFrame() {
+    const gf = ASSET.ui.goldFrame;
+    if (gf) {
+      // Water playfield under frame
+      ctx.save();
+      // Approximate inner rect matching SWF frame bevel (~22px border on 422x303 → scale to FW x FH)
+      const padX = FW * (28 / 422), padY = FH * (28 / 303);
+      roundRect(FX + padX, FY + padY, FW - padX * 2, FH - padY * 2, 8);
+      const wg = ctx.createLinearGradient(0, FY, 0, FY + FH);
+      wg.addColorStop(0, "#5CC3FF");
+      wg.addColorStop(0.45, "#40AAFF");
+      wg.addColorStop(1, "#2A88DD");
+      ctx.fillStyle = wg;
+      ctx.fill();
+      ctx.restore();
+      drawAsset(gf, FX, FY, FW, FH);
+      return;
+    }
     ctx.save();
     const rOut = 22, rIn = 10;
-    // Dark outer outline
     roundRect(FX - 2, FY - 2, FW + 4, FH + 4, rOut + 2);
     ctx.fillStyle = "#3D2200";
     ctx.fill();
-
-    // Main candy yellow body
     roundRect(FX, FY, FW, FH, rOut);
     const body = ctx.createLinearGradient(FX, FY, FX, FY + FH);
     body.addColorStop(0, "#FFE456");
@@ -238,28 +314,6 @@
     body.addColorStop(1, "#E0A000");
     ctx.fillStyle = body;
     ctx.fill();
-
-    // Top highlight bevel strip
-    ctx.save();
-    roundRect(FX, FY, FW, FH, rOut);
-    ctx.clip();
-    ctx.fillStyle = "rgba(255,255,220,0.55)";
-    ctx.fillRect(FX, FY, FW, 7);
-    ctx.fillStyle = "rgba(255,255,220,0.35)";
-    ctx.fillRect(FX, FY, 7, FH);
-    // Bottom/right shadow bevel
-    ctx.fillStyle = "rgba(120,70,0,0.35)";
-    ctx.fillRect(FX, FY + FH - 8, FW, 8);
-    ctx.fillStyle = "rgba(120,70,0,0.28)";
-    ctx.fillRect(FX + FW - 8, FY, 8, FH);
-    ctx.restore();
-
-    // Inner dark lip
-    roundRect(FX + BORDER - 3, FY + BORDER - 3, FW - (BORDER - 3) * 2, FH - (BORDER - 3) * 2, rIn + 2);
-    ctx.fillStyle = "#5C3A00";
-    ctx.fill();
-
-    // Water playfield
     roundRect(FX + BORDER, FY + BORDER, FW - BORDER * 2, FH - BORDER * 2, rIn);
     const wg = ctx.createLinearGradient(0, FY, 0, FY + FH);
     wg.addColorStop(0, "#5CC3FF");
@@ -270,18 +324,24 @@
     ctx.restore();
   }
 
-  // ─── Seabed + LARGE character props ──────────────────────
+  // ─── Seabed + props (original SWF sprites / strip) ────────
   function drawSeabed(clip) {
     ctx.save();
     if (clip) {
       roundRect(FX + BORDER, FY + BORDER, FW - BORDER * 2, FH - BORDER * 2, 10);
       ctx.clip();
     }
-    const baseY = FY + FH - BORDER - 2;
     const left = FX + BORDER;
     const right = FX + FW - BORDER;
-
-    // Rocky floor
+    const baseY = FY + FH - BORDER - 2;
+    const strip = ASSET.seabed.stripPlay || ASSET.seabed.stripTitle;
+    if (strip) {
+      const sh = Math.min(strip.height * ((right - left) / strip.width), FH * 0.28);
+      drawAsset(strip, left, baseY - sh + 6, right - left, sh);
+      ctx.restore();
+      return;
+    }
+    // Fallback vector seabed
     ctx.beginPath();
     ctx.moveTo(left, baseY + 6);
     ctx.lineTo(left, baseY - 28);
@@ -295,25 +355,6 @@
     ctx.closePath();
     ctx.fillStyle = "#6B7388";
     ctx.fill();
-
-    // Darker rock silhouettes mid-ground
-    ctx.fillStyle = "#4A5166";
-    ctx.beginPath();
-    ctx.moveTo(left + 70, baseY - 10);
-    ctx.lineTo(left + 115, baseY - 52);
-    ctx.lineTo(left + 175, baseY - 12);
-    ctx.lineTo(left + 230, baseY - 58);
-    ctx.lineTo(left + 295, baseY - 14);
-    ctx.closePath();
-    ctx.fill();
-    ctx.beginPath();
-    ctx.moveTo(left + 360, baseY - 8);
-    ctx.lineTo(left + 420, baseY - 48);
-    ctx.lineTo(left + 485, baseY - 10);
-    ctx.closePath();
-    ctx.fill();
-
-    // LARGE props (scaled to match ruffle-shots)
     drawKelp(left + 28, baseY - 6, 1.55);
     drawKelp(left + 58, baseY - 2, 1.25);
     drawCrab(left + 120, baseY - 4, 1.35);
@@ -616,13 +657,21 @@
     ctx.restore();
   }
 
-  function drawStarButton(cx, cy, color, label, hover) {
+  function drawStarButton(cx, cy, color, label, hover, which) {
+    const isHelp = which === "help" || label === "说明" || label === "도움말";
+    const img = hover
+      ? (isHelp ? (ASSET.ui.btnHelpOver || ASSET.ui.btnHelp) : (ASSET.ui.btnStartOver || ASSET.ui.btnStart))
+      : (isHelp ? ASSET.ui.btnHelp : ASSET.ui.btnStart);
+    if (img) {
+      const s = hover ? 1.08 : 1;
+      drawAssetCentered(img, cx, cy, s * 1.15);
+      return;
+    }
     const s = hover ? 1.07 : 1;
     ctx.save();
     ctx.translate(cx, cy);
     ctx.scale(s, s);
     drawPuffyStarfish(0, 0, color, 58);
-    // white center disc
     ctx.fillStyle = "#fff";
     ctx.beginPath();
     ctx.arc(0, 0, 22, 0, Math.PI * 2);
@@ -696,6 +745,21 @@
   }
 
   function drawTitleLogo(cx, cy) {
+    if (ASSET.ui.logo) {
+      drawAssetCentered(ASSET.ui.logo, cx, cy - 4, 1.55);
+      ctx.save();
+      ctx.font = "bold 18px Microsoft YaHei, PingFang SC, sans-serif";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.lineWidth = 5;
+      ctx.lineJoin = "round";
+      ctx.strokeStyle = "#0A2A5A";
+      ctx.strokeText("大鱼吃小鱼", cx, cy + 88);
+      ctx.fillStyle = "#FFFFFF";
+      ctx.fillText("大鱼吃小鱼", cx, cy + 88);
+      ctx.restore();
+      return;
+    }
     drawLogoBlock("꼬기꼬기", cx, cy, 62, "center");
     ctx.save();
     ctx.font = "bold 18px Microsoft YaHei, PingFang SC, sans-serif";
@@ -712,32 +776,37 @@
 
   // ─── SCORE plaque ────────────────────────────────────────
   function drawScorePlaque() {
-    const pw = 150, ph = 42;
+    const img = ASSET.ui.scorePlaque;
+    const pw = img ? Math.max(150, img.width * 1.35) : 150;
+    const ph = img ? Math.max(42, img.height * 1.35) : 42;
     const px = FX + FW / 2 - pw / 2;
-    const py = FY - 10;
-    // dark outline
+    const py = FY - ph * 0.55;
+    if (img) {
+      drawAsset(img, px, py, pw, ph);
+      // Overlay live score on LCD band (leave SCORE label intact)
+      const lcdY = py + ph * 0.48;
+      const lcdH = ph * 0.46;
+      roundRect(px + pw * 0.1, lcdY, pw * 0.8, lcdH, 3);
+      ctx.fillStyle = "#1A1008";
+      ctx.fill();
+      ctx.fillStyle = "#FFFFFF";
+      ctx.font = `bold ${Math.max(13, ph * 0.36)}px Arial, sans-serif`;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText(String(score).padStart(6, "0"), px + pw / 2, lcdY + lcdH / 2 + 1);
+      return;
+    }
     roundRect(px - 2, py - 2, pw + 4, ph + 4, 8);
     ctx.fillStyle = "#3D2200";
     ctx.fill();
-    // candy yellow plaque
     roundRect(px, py, pw, ph, 7);
-    const g = ctx.createLinearGradient(px, py, px, py + ph);
-    g.addColorStop(0, "#FFE456");
-    g.addColorStop(0.5, "#FFD01F");
-    g.addColorStop(1, "#E8A800");
-    ctx.fillStyle = g;
+    ctx.fillStyle = "#FFD01F";
     ctx.fill();
-    // top highlight
-    ctx.fillStyle = "rgba(255,255,230,0.45)";
-    ctx.fillRect(px + 4, py + 2, pw - 8, 5);
-
     ctx.fillStyle = "#fff";
     ctx.font = "bold 11px Arial, sans-serif";
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
     ctx.fillText("SCORE", px + pw / 2, py + 11);
-
-    // LCD black inset — 6 wide digits
     roundRect(px + 10, py + 18, pw - 20, 18, 3);
     ctx.fillStyle = "#111";
     ctx.fill();
@@ -746,98 +815,66 @@
     ctx.fillText(String(score).padStart(6, "0"), px + pw / 2, py + 28);
   }
 
-  // ─── TIME alarm clock (no LEVEL) ─────────────────────────
+  // ─── TIME alarm clock (original SWF sprite) ──────────────
   function drawTimeClock() {
-    const cx = FX + FW - 8;
-    const cy = FY + 2;
-
-    ctx.save();
-    ctx.lineJoin = "round";
-
-    // Handle arch
-    ctx.strokeStyle = "#333";
-    ctx.lineWidth = 3;
-    ctx.beginPath();
-    ctx.arc(cx, cy - 10, 16, Math.PI * 1.15, Math.PI * 1.85);
-    ctx.stroke();
-
-    // Bells
-    ctx.fillStyle = "#FFD01F";
-    ctx.strokeStyle = "#3D2200";
-    ctx.lineWidth = 2.5;
-    ctx.beginPath(); ctx.ellipse(cx - 16, cy - 18, 10, 8, -0.35, 0, Math.PI * 2);
-    ctx.fill(); ctx.stroke();
-    ctx.beginPath(); ctx.ellipse(cx + 16, cy - 18, 10, 8, 0.35, 0, Math.PI * 2);
-    ctx.fill(); ctx.stroke();
-    // bell knobs
-    ctx.fillStyle = "#C9970A";
-    ctx.beginPath(); ctx.arc(cx - 16, cy - 26, 3, 0, Math.PI * 2); ctx.fill();
-    ctx.beginPath(); ctx.arc(cx + 16, cy - 26, 3, 0, Math.PI * 2); ctx.fill();
-
-    // Clock body
-    ctx.beginPath();
-    ctx.arc(cx, cy + 14, 32, 0, Math.PI * 2);
-    const g = ctx.createRadialGradient(cx - 8, cy + 2, 4, cx, cy + 14, 32);
-    g.addColorStop(0, "#FFE456");
-    g.addColorStop(0.55, "#FFD01F");
-    g.addColorStop(1, "#D4A000");
-    ctx.fillStyle = g;
-    ctx.fill();
-    ctx.strokeStyle = "#3D2200";
-    ctx.lineWidth = 3;
-    ctx.stroke();
-
-    // Inner face ring
-    ctx.beginPath();
-    ctx.arc(cx, cy + 14, 24, 0, Math.PI * 2);
-    ctx.fillStyle = "#F5C400";
-    ctx.fill();
-    ctx.stroke();
-
-    // TIME label (top)
-    ctx.fillStyle = "#fff";
-    ctx.font = "bold 9px Arial, sans-serif";
-    ctx.textAlign = "center";
-    ctx.textBaseline = "middle";
-    ctx.fillText("TIME", cx, cy + 2);
-
-    // Black LCD with orange digits
-    roundRect(cx - 20, cy + 8, 40, 14, 2);
-    ctx.fillStyle = "#111";
-    ctx.fill();
-
+    const img = ASSET.ui.clock;
+    const cx = FX + FW - 4;
+    const cy = FY + 8;
     const total = Math.max(0, timeSec);
     const m = Math.floor(total / 60);
     const s = Math.floor(total % 60);
     const cs = Math.floor((total % 1) * 100);
     const tstr = `${m}:${String(s).padStart(2, "0")}:${String(cs).padStart(2, "0")}`;
+
+    if (img) {
+      const sc = 1.15;
+      const w = img.width * sc, h = img.height * sc;
+      const x = cx - w * 0.55, y = cy - h * 0.35;
+      drawAsset(img, x, y, w, h);
+      // Overlay live time on LCD
+      const lcdW = w * 0.55, lcdH = h * 0.16;
+      const lcdX = x + w * 0.225, lcdY = y + h * 0.42;
+      roundRect(lcdX, lcdY, lcdW, lcdH, 2);
+      ctx.fillStyle = "#111";
+      ctx.fill();
+      ctx.fillStyle = "#FF8C00";
+      ctx.font = `bold ${Math.max(9, lcdH * 0.85)}px 'Courier New', monospace`;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText(tstr, lcdX + lcdW / 2, lcdY + lcdH / 2 + 0.5);
+      return;
+    }
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(cx, cy + 14, 32, 0, Math.PI * 2);
+    ctx.fillStyle = "#FFD01F";
+    ctx.fill();
+    ctx.strokeStyle = "#3D2200";
+    ctx.lineWidth = 3;
+    ctx.stroke();
+    ctx.fillStyle = "#fff";
+    ctx.font = "bold 9px Arial, sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText("TIME", cx, cy + 2);
+    roundRect(cx - 20, cy + 8, 40, 14, 2);
+    ctx.fillStyle = "#111";
+    ctx.fill();
     ctx.fillStyle = "#FF8C00";
     ctx.font = "bold 11px 'Courier New', monospace";
     ctx.fillText(tstr, cx, cy + 16);
-
-    // Mirrored TIME (original quirk) — faint upside-down
-    ctx.save();
-    ctx.translate(cx, cy + 30);
-    ctx.scale(1, -1);
-    ctx.globalAlpha = 0.55;
-    ctx.fillStyle = "#fff";
-    ctx.font = "bold 8px Arial, sans-serif";
-    ctx.fillText("TIME", 0, 0);
-    ctx.restore();
-
-    // Feet
-    ctx.fillStyle = "#FFD01F";
-    ctx.strokeStyle = "#3D2200";
-    ctx.lineWidth = 2;
-    ctx.beginPath(); ctx.ellipse(cx - 14, cy + 44, 7, 5, 0, 0, Math.PI * 2);
-    ctx.fill(); ctx.stroke();
-    ctx.beginPath(); ctx.ellipse(cx + 14, cy + 44, 7, 5, 0, 0, Math.PI * 2);
-    ctx.fill(); ctx.stroke();
-
     ctx.restore();
   }
 
   function drawLives() {
+    const icon = ASSET.ui.lifeFish;
+    if (icon) {
+      for (let i = 0; i < lives; i++) {
+        const s = 2.2;
+        drawAsset(icon, 12, 88 + i * 48, icon.width * s, icon.height * s);
+      }
+      return;
+    }
     for (let i = 0; i < lives; i++) {
       drawFishSprite(28, 100 + i * 52, 16, 1, "player", false, 0, { player: true });
     }
@@ -1111,8 +1148,8 @@
     const p = canvasPos(e);
     pointer = p;
     if (mode === "title") {
-      if (hitStarBtn(p, W * 0.35, H * 0.48)) btnHover = "start";
-      else if (hitStarBtn(p, W * 0.65, H * 0.48)) btnHover = "help";
+      if (hitStarBtn(p, W * 0.35, H * 0.52)) btnHover = "start";
+      else if (hitStarBtn(p, W * 0.65, H * 0.52)) btnHover = "help";
       else btnHover = null;
       canvas.style.cursor = btnHover ? "pointer" : "default";
     } else if (mode === "help") {
@@ -1166,8 +1203,8 @@
   function handleClick(p) {
     unlockAudio();
     if (mode === "title") {
-      if (hitStarBtn(p, W * 0.35, H * 0.48)) startGame();
-      else if (hitStarBtn(p, W * 0.65, H * 0.48)) mode = "help";
+      if (hitStarBtn(p, W * 0.35, H * 0.52)) startGame();
+      else if (hitStarBtn(p, W * 0.65, H * 0.52)) mode = "help";
     } else if (mode === "help") {
       mode = "title";
     } else if (mode === "over" || mode === "win") {
@@ -1358,131 +1395,83 @@
 
   // ─── Screens ─────────────────────────────────────────────
   function drawTitleSeabed() {
+    const strip = ASSET.seabed.stripTitle || ASSET.seabed.stripPlay;
+    if (strip) {
+      const sh = Math.min(H * 0.28, strip.height * (W / strip.width));
+      drawAsset(strip, 0, H - sh, W, sh);
+      return;
+    }
     const baseY = H - 4;
     ctx.fillStyle = "#6B7388";
-    ctx.beginPath();
-    ctx.moveTo(0, baseY);
-    ctx.lineTo(0, baseY - 48);
-    for (let x = 0; x <= W; x += 36) {
-      ctx.lineTo(x, baseY - 24 - Math.sin(x * 0.05) * 18 - (x % 72 === 0 ? 14 : 0));
-    }
-    ctx.lineTo(W, baseY);
-    ctx.closePath();
-    ctx.fill();
-    ctx.fillStyle = "#4A5166";
-    ctx.beginPath();
-    ctx.moveTo(90, baseY - 22);
-    ctx.lineTo(145, baseY - 62);
-    ctx.lineTo(210, baseY - 20);
-    ctx.closePath();
-    ctx.fill();
-    ctx.beginPath();
-    ctx.moveTo(400, baseY - 18);
-    ctx.lineTo(460, baseY - 55);
-    ctx.lineTo(530, baseY - 16);
-    ctx.closePath();
-    ctx.fill();
-
+    ctx.fillRect(0, baseY - 48, W, 52);
     drawKelp(32, baseY - 30, 2.0);
-    drawKelp(70, baseY - 24, 1.7);
     drawCrab(155, baseY - 20, 1.75);
     drawClam(245, baseY - 16, 1.65);
     drawAnemone(330, baseY - 18, 1.7);
     drawSpottedShell(415, baseY - 14, 1.65);
     drawSmileStar(495, baseY - 16, 1.55);
     drawKelp(565, baseY - 28, 1.85);
-    drawKelp(605, baseY - 22, 1.6);
   }
 
   function drawTitle() {
     drawOuterBg();
-    ctx.fillStyle = "#015BE6";
-    ctx.fillRect(0, 0, W, H);
-    for (const b of bubbles) {
-      ctx.beginPath();
-      ctx.arc(b.x, b.y, b.r, 0, Math.PI * 2);
-      ctx.fillStyle = `rgba(255,255,255,${b.a})`;
-      ctx.fill();
+    if (ASSET.ui.bgBubbles) {
+      ctx.globalAlpha = 0.85;
+      drawAsset(ASSET.ui.bgBubbles, 0, 0, W, H);
+      ctx.globalAlpha = 1;
     }
     drawTitleSeabed();
     drawTitleLogo(W / 2, H * 0.26);
-    drawStarButton(W * 0.35, H * 0.48, "#FF8C00", "开始", btnHover === "start");
-    drawStarButton(W * 0.65, H * 0.48, "#43A047", "说明", btnHover === "help");
+    drawStarButton(W * 0.35, H * 0.52, "#FF8C00", "开始", btnHover === "start", "start");
+    drawStarButton(W * 0.65, H * 0.52, "#43A047", "说明", btnHover === "help", "help");
   }
 
   function drawHelp() {
     drawOuterBg();
     drawTitleSeabed();
+    const panel = ASSET.ui.helpPanel;
+    if (panel) {
+      const pw = Math.min(560, W - 40);
+      const ph = pw * (panel.height / panel.width);
+      const px = (W - pw) / 2;
+      const py = 28;
+      drawAsset(panel, px, py, pw, ph);
+      // Chinese caption under Korean original for the kid
+      ctx.save();
+      ctx.font = "bold 13px Microsoft YaHei, PingFang SC, sans-serif";
+      ctx.textAlign = "center";
+      ctx.fillStyle = "rgba(255,255,255,0.9)";
+      ctx.strokeStyle = "#0A2A5A";
+      ctx.lineWidth = 3;
+      ctx.lineJoin = "round";
+      const tip = "比自己小才能吃 · 撞大鱼会丢命 · 方向键移动";
+      ctx.strokeText(tip, W / 2, py + ph + 18);
+      ctx.fillText(tip, W / 2, py + ph + 18);
+      ctx.restore();
+      const next = ASSET.ui.btnNext;
+      if (next) drawAssetCentered(next, W - 55, H - 55, 1.8);
+      else {
+        ctx.beginPath();
+        ctx.arc(W - 55, H - 55, 28, 0, Math.PI * 2);
+        ctx.fillStyle = btnHover === "next" ? "#FFA726" : "#FF8C00";
+        ctx.fill();
+      }
+      return;
+    }
+    // Fallback vector help (kept for missing assets)
     const px = 50, py = 36, pw = 540, ph = 340;
-    // Thick candy frame with screws
-    roundRect(px - 2, py - 2, pw + 4, ph + 4, 18);
-    ctx.fillStyle = "#3D2200";
-    ctx.fill();
     roundRect(px, py, pw, ph, 16);
-    const g = ctx.createLinearGradient(px, py, px, py + ph);
-    g.addColorStop(0, "#FFE456");
-    g.addColorStop(1, "#E0A000");
-    ctx.fillStyle = g;
+    ctx.fillStyle = "#FFD01F";
     ctx.fill();
     roundRect(px + 14, py + 14, pw - 28, ph - 28, 10);
     ctx.fillStyle = "#A8D4F0";
     ctx.fill();
-    for (const [sx, sy] of [[px + 20, py + 20], [px + pw - 20, py + 20], [px + 20, py + ph - 20], [px + pw - 20, py + ph - 20]]) {
-      ctx.beginPath(); ctx.arc(sx, sy, 8, 0, Math.PI * 2);
-      ctx.fillStyle = "#C0C0C0"; ctx.fill();
-      ctx.strokeStyle = "#555"; ctx.lineWidth = 2; ctx.stroke();
-      ctx.beginPath();
-      ctx.moveTo(sx - 4, sy); ctx.lineTo(sx + 4, sy);
-      ctx.moveTo(sx, sy - 4); ctx.lineTo(sx, sy + 4);
-      ctx.stroke();
-    }
-    drawLogo(px + 16, py + 4, 0.95);
-
     ctx.fillStyle = "#1a3a5c";
-    ctx.font = "bold 15px Microsoft YaHei, PingFang SC, sans-serif";
-    ctx.textAlign = "left";
-    ctx.fillText("体型严格更大才能吃掉（相等不行）", px + 40, py + 70);
-
-    drawFishSprite(px + 80, py + 110, 22, 1, "player", false, 0, { player: true });
-    drawFishSprite(px + 140, py + 115, 12, -1, "pink", false, 0, { artType: 2 });
-    drawSign(px + 200, py + 110, "O", "#E53935");
-
-    ctx.fillText("比自己大的鱼要躲开，撞到会丢命", px + 40, py + 160);
-    drawFishSprite(px + 80, py + 205, 16, 1, "player", false, 0, { player: true });
-    drawFishSprite(px + 160, py + 200, 32, -1, "purple", false, 0, { artType: 8 });
-    drawSign(px + 230, py + 200, "X", "#E53935");
-
-    roundRect(px + 40, py + 250, 70, 24, 10);
-    ctx.fillStyle = "#fff";
-    ctx.fill();
-    ctx.strokeStyle = "#E53935";
-    ctx.lineWidth = 2;
-    ctx.stroke();
-    ctx.fillStyle = "#E53935";
-    ctx.font = "bold 12px Microsoft YaHei, sans-serif";
-    ctx.textAlign = "center";
-    ctx.fillText("操作", px + 75, py + 266);
-
-    drawArrowKeys(px + 140, py + 280);
-
-    ctx.fillStyle = "#1a3a5c";
-    ctx.font = "12px Microsoft YaHei, sans-serif";
-    ctx.textAlign = "left";
-    ctx.fillText("方向键/WASD（惯性）· Shift加速 · 触屏跟随", px + 250, py + 285);
-
+    ctx.font = "bold 15px Microsoft YaHei, sans-serif";
+    ctx.fillText("比自己小才能吃；撞大鱼会丢命；方向键移动", px + 40, py + 70);
     ctx.beginPath();
     ctx.arc(W - 55, H - 55, 28, 0, Math.PI * 2);
-    ctx.fillStyle = btnHover === "next" ? "#FFA726" : "#FF8C00";
-    ctx.fill();
-    ctx.strokeStyle = "#000";
-    ctx.lineWidth = 3;
-    ctx.stroke();
-    ctx.fillStyle = "#fff";
-    ctx.beginPath();
-    ctx.moveTo(W - 65, H - 68);
-    ctx.lineTo(W - 65, H - 42);
-    ctx.lineTo(W - 42, H - 55);
-    ctx.closePath();
+    ctx.fillStyle = "#FF8C00";
     ctx.fill();
   }
 
@@ -1572,8 +1561,14 @@
 
     ctx.restore();
 
-    // HUD: chunky logo overlapping top-left corner of gold frame
-    drawLogo(FX - 6, FY - 4, 1.05);
+    // HUD: original logo + SCORE + TIME + lives
+    if (ASSET.ui.logoHud) {
+      drawAsset(ASSET.ui.logoHud, FX - 8, FY - 16, ASSET.ui.logoHud.width * 1.15, ASSET.ui.logoHud.height * 1.15);
+    } else if (ASSET.ui.logo) {
+      drawAsset(ASSET.ui.logo, FX - 16, FY - 28, 140, 70);
+    } else {
+      drawLogo(FX - 6, FY - 4, 1.05);
+    }
     drawScorePlaque();
     drawTimeClock();
     drawLives();
@@ -1586,57 +1581,59 @@
       drawFishSprite(deathFish.x, deathFish.y, deathFish.size || 18, 1, "player", true, 0, { player: true });
     }
     const px = 70, py = 70, pw = 500, ph = 280;
-    roundRect(px - 2, py - 2, pw + 4, ph + 4, 18);
-    ctx.fillStyle = "#3D2200";
-    ctx.fill();
-    roundRect(px, py, pw, ph, 16);
-    const g = ctx.createLinearGradient(px, py, px, py + ph);
-    g.addColorStop(0, "#FFE456");
-    g.addColorStop(1, "#E0A000");
-    ctx.fillStyle = g;
-    ctx.fill();
-    roundRect(px + 14, py + 14, pw - 28, ph - 28, 10);
-    ctx.fillStyle = "#A8D4F0";
-    ctx.fill();
-    for (const [sx, sy] of [[px + 20, py + 20], [px + pw - 20, py + 20], [px + 20, py + ph - 20], [px + pw - 20, py + ph - 20]]) {
-      ctx.beginPath(); ctx.arc(sx, sy, 8, 0, Math.PI * 2);
-      ctx.fillStyle = "#C0C0C0"; ctx.fill();
-      ctx.strokeStyle = "#555"; ctx.lineWidth = 2; ctx.stroke();
+    // Gold frame chrome
+    if (ASSET.ui.goldFrame) {
+      drawAsset(ASSET.ui.goldFrame, px, py, pw, ph);
+      // fill inner with light blue
+      ctx.save();
+      roundRect(px + 28, py + 28, pw - 56, ph - 56, 8);
+      ctx.fillStyle = "#A8D4F0";
+      ctx.fill();
+      ctx.restore();
+    } else {
+      roundRect(px, py, pw, ph, 16);
+      ctx.fillStyle = "#FFD01F";
+      ctx.fill();
+      roundRect(px + 14, py + 14, pw - 28, ph - 28, 10);
+      ctx.fillStyle = "#A8D4F0";
+      ctx.fill();
     }
 
-    ctx.font = "bold 42px Impact, Arial Black, sans-serif";
-    ctx.textAlign = "center";
-    ctx.lineJoin = "round";
-    // chunky black offset + orange outline
-    const title = (mode === "win") ? "CLEAR!" : "GAME OVER";
-    const outline = (mode === "win") ? "#2E7D32" : "#FF6D00";
-    ctx.fillStyle = "#0A0A0A";
-    ctx.fillText(title, W / 2 + 4, py + 74);
-    ctx.lineWidth = 8;
-    ctx.strokeStyle = outline;
-    ctx.strokeText(title, W / 2, py + 70);
-    ctx.fillStyle = "#FFFFFF";
-    ctx.fillText(title, W / 2, py + 70);
+    if (mode === "win" && ASSET.ui.congratulation) {
+      drawAssetCentered(ASSET.ui.congratulation, W / 2, py + 70, 0.55);
+    } else if (ASSET.ui.gameOver) {
+      drawAssetCentered(ASSET.ui.gameOver, W / 2, py + 70, 1.4);
+    } else {
+      ctx.font = "bold 42px Impact, Arial Black, sans-serif";
+      ctx.textAlign = "center";
+      ctx.fillStyle = "#FFFFFF";
+      ctx.fillText(mode === "win" ? "CLEAR!" : "GAME OVER", W / 2, py + 70);
+    }
 
-    const bx = W / 2 - 140, by = py + 110;
-    roundRect(bx, by, 280, 48, 6);
-    ctx.fillStyle = "#111";
-    ctx.fill();
-    roundRect(bx + 6, by + 8, 56, 32, 4);
-    ctx.fillStyle = "#FFD01F";
-    ctx.fill();
-    ctx.strokeStyle = "#fff";
-    ctx.lineWidth = 1;
-    ctx.stroke();
-    ctx.fillStyle = "#111";
-    ctx.font = "bold 14px Malgun Gothic, Microsoft YaHei, sans-serif";
-    ctx.textAlign = "center";
-    ctx.fillText("점수", bx + 34, by + 29);
-
-    ctx.fillStyle = "#FFEE58";
-    ctx.font = "bold 28px 'Courier New', monospace";
-    ctx.textAlign = "right";
-    ctx.fillText(String(score).padStart(6, "0"), bx + 268, by + 34);
+    // Score plaque (점수 + digits)
+    if (ASSET.ui.gameoverScore) {
+      const gs = ASSET.ui.gameoverScore;
+      const gw = Math.min(320, gs.width * 1.1);
+      const gh = gw * (gs.height / gs.width);
+      const gx = W / 2 - gw / 2, gy = py + 120;
+      drawAsset(gs, gx, gy, gw, gh);
+      // Cover baked-in zeros then draw live score
+      const digitX = gx + gw * 0.28;
+      const digitW = gw * 0.70;
+      roundRect(digitX, gy + gh * 0.12, digitW, gh * 0.76, 3);
+      ctx.fillStyle = "#000";
+      ctx.fill();
+      ctx.fillStyle = "#FFEE58";
+      ctx.font = `bold ${Math.max(18, gh * 0.55)}px 'Courier New', monospace`;
+      ctx.textAlign = "right";
+      ctx.textBaseline = "middle";
+      ctx.fillText(String(score).padStart(6, "0"), gx + gw - 14, gy + gh / 2 + 1);
+    } else {
+      ctx.fillStyle = "#FFEE58";
+      ctx.font = "bold 28px 'Courier New', monospace";
+      ctx.textAlign = "center";
+      ctx.fillText(String(score).padStart(6, "0"), W / 2, py + 140);
+    }
 
     roundRect(W / 2 - 70, H * 0.62, 140, 44, 12);
     ctx.fillStyle = btnHover === "retry" ? "#FFA726" : "#FF8C00";

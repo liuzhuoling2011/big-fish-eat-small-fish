@@ -59,6 +59,9 @@
 
   let mode = "loading"; // loading | title | help | play | over | win
   let paused = false;
+  // Set when boot picks a screen, or when the player starts a round early
+  // (help/over retry) so a late asset callback cannot snap back to the hash screen.
+  let bootCommitted = false;
 
   // Virtual joystick (phone/tablet) — HTML overlay in letterbox, NOT on canvas
   const joypad = document.getElementById("joypad");
@@ -175,6 +178,16 @@
     play(){ startGame(); },
     joy(){ joy.enabled = true; layoutJoypad(); },
     pause(){ togglePause(); },
+    state(){
+      return {
+        mode,
+        paused,
+        score,
+        lives,
+        timeSec,
+        audio: audioCtx ? audioCtx.state : "none",
+      };
+    },
   };
 
   let score = 0;
@@ -252,6 +265,8 @@
   }
 
   let audioCtx = null;
+  // True once beginRound/pause asked for music. Playback waits out autoplay.
+  let bgmWanted = false;
   // Core SFX only — gulps unused; BGM deferred
   const SFX_CORE = {
     eat: "assets/sfx/Eat2.mp3",
@@ -350,22 +365,17 @@
     return out;
   }
 
-  // Phase 1 — title screen only (few HTTP requests)
+  // Phase 1 — frame + water. Title buttons are not on the way into a round.
   async function loadCritical() {
-    setProgress(0.05, "加载标题…");
+    setProgress(0.05, "加载游戏…");
     const ui = await loadImageMap({
       logo: "assets/ui/logo.webp",
-      btnStart: "assets/ui/btn-start-up.webp",
-      btnStartOver: "assets/ui/btn-start-over.webp",
-      btnHelp: "assets/ui/btn-help-up.webp",
-      btnHelpOver: "assets/ui/btn-help-over.webp",
       goldFrame: "assets/ui/gold-frame.webp",
       bgBubbles: "assets/ui/bg-bubbles.webp",
     });
     Object.assign(ASSET.ui, ui);
-    ASSET.seabed.stripTitle = await loadImage("assets/seabed/strip-title.webp");
-    setProgress(0.28, "标题就绪");
-    ASSET.ready = !!(ASSET.ui.logo || ASSET.ui.btnStart);
+    setProgress(0.22, "准备水域…");
+    ASSET.ready = !!(ASSET.ui.goldFrame || ASSET.ui.logo || ASSET.ui.bgBubbles);
   }
 
   // Phase 2 — enough to play a round
@@ -433,7 +443,11 @@
 
     setProgress(0.92, "加载界面…");
     const ui = await loadImageMap({
+      btnStart: "assets/ui/btn-start-up.webp",
+      btnStartOver: "assets/ui/btn-start-over.webp",
       btnStartDown: "assets/ui/btn-start-down.webp",
+      btnHelp: "assets/ui/btn-help-up.webp",
+      btnHelpOver: "assets/ui/btn-help-over.webp",
       btnHelpDown: "assets/ui/btn-help-down.webp",
       btnNext: "assets/ui/btn-next.webp",
       helpPanel: "assets/ui/help-panel.webp",
@@ -443,6 +457,9 @@
       gameoverLabel: "assets/ui/gameover-label.webp",
     });
     Object.assign(ASSET.ui, ui);
+    if (!ASSET.seabed.stripTitle) {
+      ASSET.seabed.stripTitle = await loadImage("assets/seabed/strip-title.webp");
+    }
 
     for (const [k, url] of Object.entries(SFX_DEFER)) {
       ASSET.sfx[k] = loadAudio(url);
@@ -451,6 +468,8 @@
       ASSET.sfx.bgm.loop = true;
       ASSET.sfx.bgm.volume = 0.35;
     }
+    // Round may already be running; start music if autoplay allows, else the next gesture retries.
+    if (bgmWanted) ensureBgm(true);
     for (const [k, url] of Object.entries(SFX_DEFER)) {
       if (k === "bgm") continue;
       decodeSfxBuffer(k, url);
@@ -463,6 +482,44 @@
   let _playPackPromise = null;
   let _deferPromise = null;
 
+  function bootQaMode() {
+    const q = new URLSearchParams(location.search);
+    if (q.get("qa") !== "1") return "";
+    return q.get("mode") || "title";
+  }
+
+  // Fresh visits enter play. Hash screens and ?qa=1&mode=title stay available.
+  function enterBootMode(bootHash) {
+    if (bootCommitted) return;
+    bootCommitted = true;
+    const qaMode = bootQaMode();
+    if (bootHash === "#over") {
+      score = 12345; lives = 0;
+      deathFish = { x: 560, y: 220, size: 18 };
+      mode = "over";
+      syncJoypadVisibility();
+      return;
+    }
+    if (bootHash === "#win") {
+      score = 105756; lives = 3;
+      deathFish = { x: 560, y: 220, size: 80 };
+      mode = "win";
+      syncJoypadVisibility();
+      return;
+    }
+    if (bootHash === "#help" || qaMode === "help") {
+      mode = "help";
+      syncJoypadVisibility();
+      return;
+    }
+    if (qaMode === "title") {
+      mode = "title";
+      syncJoypadVisibility();
+      return;
+    }
+    if (mode === "loading" || mode === "title") beginRound();
+  }
+
   async function loadAssets() {
     mode = "loading";
     const bootHash = location.hash || "";
@@ -472,26 +529,12 @@
         _deferPromise = loadDeferred().catch(() => {});
       });
       await _playPackPromise;
-      if (bootHash === "#over") {
-        score = 12345; lives = 0;
-        deathFish = { x: 560, y: 220, size: 18 };
-        mode = "over";
-      } else if (bootHash === "#win") {
-        score = 105756; lives = 3;
-        deathFish = { x: 560, y: 220, size: 80 };
-        mode = "win";
-      } else if (bootHash === "#help") {
-        mode = "help";
-      } else if (bootHash === "#play") {
-        // startGame() may already be in flight from hash boot
-        if (mode === "loading" || mode === "title") beginRound();
-      } else {
-        mode = "title";
-      }
+      enterBootMode(bootHash);
     } catch (err) {
       console.warn("asset load", err);
       ASSET.ready = true;
-      mode = "title";
+      ASSET.playReady = true;
+      enterBootMode(bootHash);
     }
   }
 
@@ -506,7 +549,12 @@
     const ctx = audioCtx || ensureAudioCtx();
     if (buf && ctx) {
       try {
-        if (ctx.state === "suspended") ctx.resume();
+        if (ctx.state === "suspended") {
+          const resumed = ctx.resume();
+          if (resumed && resumed.catch) resumed.catch(() => {});
+          // Autoplay blocked. Drop this one-shot; the round keeps running.
+          if (ctx.state !== "running") return;
+        }
         const src = ctx.createBufferSource();
         src.buffer = buf;
         const gain = ctx.createGain();
@@ -533,13 +581,15 @@
   }
 
   function ensureBgm(on) {
+    bgmWanted = !!on;
     const a = ASSET.sfx.bgm;
     if (!a) return;
     if (on) {
+      if (!a.paused) return;
       const p = a.play();
       if (p && p.catch) p.catch(() => {});
     } else {
-      a.pause();
+      try { a.pause(); } catch (_) {}
     }
   }
 
@@ -1905,11 +1955,12 @@
 
   function startGame() {
     unlockAudio();
+    bootCommitted = true;
     if (!ASSET.playReady) {
       mode = "loading";
       ASSET.loadLabel = "准备游戏…";
       ensurePlayAssets().then(() => {
-        if (mode === "loading" || mode === "title") beginRound();
+        if (mode === "loading" || mode === "title" || mode === "help" || mode === "over" || mode === "win") beginRound();
       });
       return;
     }
@@ -1942,13 +1993,14 @@
 
   // ─── Input ───────────────────────────────────────────────
   window.addEventListener("keydown", (e) => {
+    unlockAudio();
     keys[e.code] = true;
     if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Space"].includes(e.code)) e.preventDefault();
     if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "KeyW", "KeyA", "KeyS", "KeyD"].includes(e.code)) {
       kbdActive = true;
     }
     if (mode === "title" && (e.code === "Enter" || e.code === "Space")) { unlockAudio(); startGame(); }
-    if (mode === "help" && (e.code === "Enter" || e.code === "Space" || e.code === "Escape")) mode = "title";
+    if (mode === "help" && (e.code === "Enter" || e.code === "Space" || e.code === "Escape")) startGame();
     if ((mode === "over" || mode === "win") && (e.code === "Enter" || e.code === "Space")) startGame();
     if (mode === "play" && (e.code === "KeyP" || e.code === "Escape")) { e.preventDefault(); togglePause(); }
   });
@@ -2137,25 +2189,34 @@
   function unlockAudio() {
     const ctx = ensureAudioCtx();
     if (ctx && ctx.state === "suspended") {
-      ctx.resume().catch(() => {});
+      const resumed = ctx.resume();
+      if (resumed && resumed.catch) resumed.catch(() => {});
     }
-    if (audioUnlocked) return;
-    audioUnlocked = true;
-    // Decode any buffers that failed before gesture; warm HTMLAudio muted
-    for (const [k, url] of Object.entries(SFX_URLS)) {
-      if (k === "bgm") continue;
-      if (!ASSET.sfxBuf[k]) decodeSfxBuffer(k, url);
+    // A load-time call leaves the context suspended. Do not latch until output
+    // is actually allowed, so the first real gesture can still unlock sound.
+    const canOutput = !ctx || ctx.state === "running";
+    if (canOutput && !audioUnlocked) {
+      audioUnlocked = true;
+      for (const [k, url] of Object.entries(SFX_URLS)) {
+        if (k === "bgm") continue;
+        if (!ASSET.sfxBuf[k]) decodeSfxBuffer(k, url);
+      }
+      for (const a of Object.values(ASSET.sfx)) {
+        if (!a || a === ASSET.sfx.bgm) continue;
+        try {
+          const wasVol = a.volume;
+          a.muted = true;
+          const p = a.play();
+          const done = () => {
+            try { a.pause(); a.currentTime = 0; a.muted = false; a.volume = wasVol; } catch (_) {}
+          };
+          if (p && p.then) p.then(done).catch(() => { try { a.muted = false; } catch (_) {} });
+          else done();
+        } catch (_) {}
+      }
     }
-    for (const a of Object.values(ASSET.sfx)) {
-      if (!a) continue;
-      try {
-        const wasVol = a.volume;
-        a.muted = true;
-        const p = a.play();
-        if (p && p.then) p.then(() => { a.pause(); a.currentTime = 0; a.muted = false; a.volume = wasVol; }).catch(() => { a.muted = false; });
-        else { a.pause(); a.currentTime = 0; a.muted = false; }
-      } catch (_) {}
-    }
+    // play() must run in this gesture, not after resume() resolves.
+    if (bgmWanted && mode === "play" && !paused) ensureBgm(true);
   }
 
   function handleClick(p) {
@@ -2172,7 +2233,7 @@
         }
       }
     } else if (mode === "help") {
-      mode = "title";
+      startGame();
     } else if (mode === "over" || mode === "win") {
       const r = overPanelMetrics().retry;
       if (p.x > r.x && p.x < r.x + r.w && p.y > r.y && p.y < r.y + r.h) startGame();
@@ -2772,8 +2833,9 @@
     else syncJoypadVisibility();
     requestAnimationFrame(frame);
   }
-  if (location.hash === "#play") startGame();
-  else if (location.hash === "#help") mode = "help";
+  // Normal visits stay on the loader until enterBootMode() starts the round.
+  // Do not call startGame() here — that would try to unlock audio before a gesture.
+  if (location.hash === "#help") mode = "help";
   else if (location.hash === "#over") {
     score = 12345; lives = 0; deathFish = { x: 560, y: 220, size: 18 }; mode = "over";
   }
